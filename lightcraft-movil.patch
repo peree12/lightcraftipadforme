@@ -15371,10 +15371,10 @@ literal 0
 HcmV?d00001
 
 diff --git a/apps/lightcraft-web/index.html b/apps/lightcraft-web/index.html
-index b088ad1..99e688c 100644
+index b088ad1..82e8881 100644
 --- a/apps/lightcraft-web/index.html
 +++ b/apps/lightcraft-web/index.html
-@@ -2,25 +2,270 @@
+@@ -2,25 +2,323 @@
  <html lang="en">
  <head>
    <meta charset="utf-8">
@@ -15425,6 +15425,25 @@ index b088ad1..99e688c 100644
 +    #lightcraft_loading img { width: 96px; height: 96px; border-radius: 22px; }
 +    #lightcraft_loading small { color: #808080; font-size: 13px; max-width: 32em; }
      #lightcraft_status { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; overflow: hidden; }
++    #lightcraft_notice {
++      position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center;
++      padding: calc(20px + env(safe-area-inset-top, 0px)) 20px calc(20px + env(safe-area-inset-bottom, 0px));
++      background: #000a; font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #e8e8e8;
++      -webkit-user-select: text; user-select: text;
++    }
++    #lightcraft_notice[hidden] { display: none; }
++    #lightcraft_notice .card {
++      max-width: 30em; background: #262626; border: 1px solid #3a3a3a; border-radius: 18px;
++      padding: 24px 26px; box-shadow: 0 12px 40px #000c; text-align: center;
++    }
++    #lightcraft_notice img { width: 64px; height: 64px; border-radius: 15px; }
++    #lightcraft_notice h1 { font-size: 21px; margin: 10px 0 8px; }
++    #lightcraft_notice p { margin: 8px 0; }
++    #lightcraft_notice .dim { color: #9a9a9a; font-size: 13px; }
++    #lightcraft_notice button {
++      margin-top: 14px; font: 600 17px system-ui, -apple-system, sans-serif; padding: 12px 34px;
++      border-radius: 12px; border: 0; background: #f2a516; color: #1c1c1c; min-height: 44px;
++    }
    </style>
  </head>
  <body>
@@ -15433,9 +15452,21 @@ index b088ad1..99e688c 100644
 +  <div id="lightcraft_loading">
 +    <img src="./icons/icon-192.png" alt="">
 +    <div id="lightcraft_loading_text">Loading LightCraft…</div>
++    <small>Unofficial iPad port by @foco.andres</small>
 +    <small id="lightcraft_loading_hint"></small>
 +  </div>
    <div id="lightcraft_status" aria-live="polite"></div>
++  <!-- Shown at every start: this build is a personal port, not the official app. -->
++  <div id="lightcraft_notice" role="dialog" aria-modal="true" aria-labelledby="lightcraft_notice_title">
++    <div class="card">
++      <img src="./icons/icon-192.png" alt="">
++      <h1 id="lightcraft_notice_title">Unofficial port</h1>
++      <p>This mobile and iPad version of LightCraft was made by <b>@foco.andres</b> for personal use on an iPad.</p>
++      <p><b>It is not the official LightCraft app</b> and is not affiliated with, endorsed by or supported by the LightCraft developers. Please don’t report problems with this port to them.</p>
++      <p class="dim">LightCraft is open-source software (MIT / Apache-2.0). Official project: github.com/storytold/lightcraft</p>
++      <button id="lightcraft_notice_ok" type="button">Continue</button>
++    </div>
++  </div>
 +  <script>
 +    // ---- Phones and tablets ---------------------------------------------------------------
 +    // The WASM app reads `lightcraftMobile` (apps/lightcraft-web/src/mobile.rs).
@@ -15643,6 +15674,28 @@ index b088ad1..99e688c 100644
 +      }
 +    })();
 +
++    // ---- Unofficial-port notice: dismissed with Continue (or Return/Escape on a keyboard) ----
++    (() => {
++      const box = document.getElementById("lightcraft_notice");
++      const ok = document.getElementById("lightcraft_notice_ok");
++      if (!box || !ok) return;
++      const close = () => {
++        box.hidden = true;
++        const c = document.getElementById("lightcraft_canvas");
++        if (c) c.focus({ preventScroll: true });
++      };
++      ok.addEventListener("click", close);
++      // keys while the notice is up close it, and don't reach the app behind it
++      document.addEventListener("keydown", (e) => {
++        if (box.hidden) return;
++        e.stopImmediatePropagation();
++        if (e.key === "Enter" || e.key === "Escape" || e.key === " ") { e.preventDefault(); close(); }
++      }, { capture: true });
++      // touches on the notice stay on it
++      for (const t of ["touchstart", "touchend", "pointerdown", "pointerup"]) box.addEventListener(t, (e) => e.stopPropagation());
++      setTimeout(() => ok.focus({ preventScroll: true }), 0);
++    })();
++
 +    // ---- Offline: the service worker keeps the app's files (GitHub Pages and any HTTPS host) ----
 +    if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
 +      addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch((e) => console.warn("service worker:", e)));
@@ -15651,7 +15704,7 @@ index b088ad1..99e688c 100644
    <script type="module">
      import init, { start, command } from "./lightcraft_web.js";
      (async () => {
-@@ -30,18 +275,24 @@
+@@ -30,18 +328,25 @@
          .then(async response => response.ok ? new Uint8Array(await response.arrayBuffer()) : new Uint8Array())
          .catch(() => new Uint8Array());
        // Compile once; the render workers (worker.js) instantiate the same compiled module.
@@ -15673,7 +15726,8 @@ index b088ad1..99e688c 100644
 +      globalThis.lightcraftMobile.started = true;
 +      // a good start: forget earlier recoveries after a minute of running
 +      setTimeout(() => { try { sessionStorage.removeItem("lightcraftReloads"); } catch (_) {} }, 60000);
-+      document.getElementById("lightcraft_canvas").focus({ preventScroll: true });
++      const notice = document.getElementById("lightcraft_notice");
++      if (!notice || notice.hidden) document.getElementById("lightcraft_canvas").focus({ preventScroll: true });
      })().catch((e) => {
        console.error(e);
 -      const el = document.getElementById("lightcraft_loading");
@@ -15721,10 +15775,10 @@ index 631e09f..8dbecd4 100644
  mod web;
 diff --git a/apps/lightcraft-web/src/mobile.rs b/apps/lightcraft-web/src/mobile.rs
 new file mode 100644
-index 0000000..e6b9e73
+index 0000000..2dc54d8
 --- /dev/null
 +++ b/apps/lightcraft-web/src/mobile.rs
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,439 @@
 +//! Phones and tablets (iPhone, iPad, Android): the browser host's side of LightCraft's touch
 +//! support. The page (`index.html`) works out what the device is and keeps a little state the
 +//! browser only reports to its own event handlers; this module reads it each frame:
@@ -15922,6 +15976,248 @@ index 0000000..e6b9e73
 +        }
 +    }
 +}
++
++// ------------------------------------------------------------------ multi-finger taps
++
++/// What a multi-finger tap asks for (as in drawing apps on iPad): two fingers undo, three redo.
++/// Apple Pencil's own double-tap and squeeze go to iPadOS only; a web page never sees them.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum TapAction {
++    Undo,
++    Redo,
++}
++
++impl TapAction {
++    pub fn command(self) -> &'static str {
++        match self {
++            TapAction::Undo => "edit.undo",
++            TapAction::Redo => "edit.redo",
++        }
++    }
++}
++
++/// A finger's press is held back this long: a second finger landing in that time makes the
++/// touch a gesture (pinch, two- or three-finger tap), which must not also tap a button, select a
++/// photo or zoom the loupe with the first finger.
++const HOLD_MS: f64 = 70.0;
++/// A multi-finger tap: all fingers up within this time, none moved further (points).
++const TAP_MS: f64 = 450.0;
++const TAP_SLOP: f32 = 24.0;
++
++#[derive(Default)]
++struct Gestures {
++    /// Fingers down: id → (where it landed, where it is).
++    active: std::collections::HashMap<u64, (egui::Pos2, egui::Pos2)>,
++    started_ms: f64,
++    max_fingers: usize,
++    moved: f32,
++    /// The first finger's press, not passed on yet, and when it came.
++    held: Option<(egui::Event, f64)>,
++    /// A multi-finger gesture: pointer presses and releases are dropped until every finger is up.
++    gesture: bool,
++    pointer: Option<egui::Pos2>,
++}
++
++thread_local! {
++    static GESTURES: std::cell::RefCell<Gestures> = std::cell::RefCell::new(Gestures::default());
++}
++
++fn now_ms() -> f64 {
++    js_sys::Date::now()
++}
++
++/// Filter this frame's input for multi-finger gestures (before the app sees it). Returns the tap
++/// action, if a two- or three-finger tap just ended, and whether a held press needs another frame
++/// soon (the caller requests one). Mouse, trackpad and Apple Pencil input passes untouched.
++pub(crate) fn filter_gestures(raw: &mut egui::RawInput) -> (Option<TapAction>, bool) {
++    let stylus = global("lightcraftMobile").is_some_and(|m| flag(&m, "stylus"));
++    GESTURES.with(|g| filter_with(&mut g.borrow_mut(), raw, stylus, now_ms()))
++}
++
++fn filter_with(g: &mut Gestures, raw: &mut egui::RawInput, stylus: bool, now: f64) -> (Option<TapAction>, bool) {
++    use egui::{Event, TouchPhase};
++    // eframe sends a finger's press together with its touch start, in the same frame
++    let finger_down = raw.events.iter().any(|e| matches!(e, Event::Touch { phase: TouchPhase::Start, .. }));
++    let mut out = Vec::with_capacity(raw.events.len() + 2);
++    let mut action = None;
++    let mut ended = false;
++    for e in raw.events.drain(..) {
++        match &e {
++            Event::Touch { id, phase, pos, .. } => {
++                match phase {
++                    TouchPhase::Start => {
++                        if g.active.is_empty() {
++                            g.started_ms = now;
++                            g.max_fingers = 0;
++                            g.moved = 0.0;
++                            g.gesture = false;
++                        }
++                        g.active.insert(id.0, (*pos, *pos));
++                        g.max_fingers = g.max_fingers.max(g.active.len());
++                        // a second finger while the first one's press is still held: a gesture
++                        if g.active.len() >= 2 && g.held.take().is_some() {
++                            g.gesture = true;
++                        }
++                    }
++                    TouchPhase::Move => {
++                        if let Some((start, last)) = g.active.get_mut(&id.0) {
++                            *last = *pos;
++                            g.moved = g.moved.max(start.distance(*pos));
++                        }
++                    }
++                    TouchPhase::End | TouchPhase::Cancel => {
++                        g.active.remove(&id.0);
++                        if g.active.is_empty() && g.gesture {
++                            let quick = now - g.started_ms <= TAP_MS && g.moved <= TAP_SLOP;
++                            if quick && *phase == TouchPhase::End {
++                                action = match g.max_fingers {
++                                    2 => Some(TapAction::Undo),
++                                    3 => Some(TapAction::Redo),
++                                    _ => None,
++                                };
++                            }
++                            ended = true;
++                        }
++                    }
++                }
++                out.push(e);
++            }
++            Event::PointerMoved(p) => {
++                g.pointer = Some(*p);
++                out.push(e);
++            }
++            Event::PointerButton { pressed: true, .. } if finger_down && !stylus => {
++                if g.gesture || g.active.len() >= 2 {
++                    g.gesture = true; // dropped: part of a gesture
++                } else {
++                    g.held = Some((e, now));
++                }
++            }
++            Event::PointerButton { pressed: false, .. } if g.gesture || ended => {}
++            Event::PointerButton { pressed: false, .. } => {
++                // a quick tap: its press first, then the release (a click)
++                if let Some((press, _)) = g.held.take() {
++                    push_press(&mut out, press, g.pointer);
++                }
++                out.push(e);
++            }
++            _ => out.push(e),
++        }
++    }
++    if ended {
++        g.gesture = false;
++        g.held = None;
++        out.push(Event::PointerGone);
++    }
++    // held long enough with one finger: it's a touch on whatever is under it
++    if let Some((_, t)) = &g.held
++        && now - *t >= HOLD_MS
++        && let Some((press, _)) = g.held.take()
++    {
++        push_press(&mut out, press, g.pointer);
++    }
++    raw.events = out;
++    (action, g.held.is_some())
++}
++
++/// Pass on a held press: at the place the finger landed, then to where it is now, so a slider or
++/// a pan that started moving during the hold follows from its start.
++fn push_press(out: &mut Vec<egui::Event>, press: egui::Event, now_at: Option<egui::Pos2>) {
++    let start = match &press {
++        egui::Event::PointerButton { pos, .. } => Some(*pos),
++        _ => None,
++    };
++    if let Some(p) = start {
++        out.push(egui::Event::PointerMoved(p));
++    }
++    out.push(press);
++    if let Some(q) = now_at
++        && start.is_some_and(|p| p.distance(q) > 0.5)
++    {
++        out.push(egui::Event::PointerMoved(q));
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use egui::{Event, PointerButton, Pos2, RawInput, TouchDeviceId, TouchId, TouchPhase, pos2};
++
++    fn touch(id: u64, phase: TouchPhase, pos: Pos2) -> Event {
++        Event::Touch { device_id: TouchDeviceId(0), id: TouchId(id), phase, pos, force: None }
++    }
++    fn button(pressed: bool, pos: Pos2) -> Event {
++        Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() }
++    }
++    fn frame(g: &mut Gestures, events: Vec<Event>, now: f64) -> (Vec<Event>, Option<TapAction>) {
++        let mut raw = RawInput { events, ..Default::default() };
++        let (a, _) = filter_with(g, &mut raw, false, now);
++        (raw.events, a)
++    }
++    fn presses(ev: &[Event]) -> usize {
++        ev.iter().filter(|e| matches!(e, Event::PointerButton { pressed: true, .. })).count()
++    }
++
++    #[test]
++    fn a_quick_one_finger_tap_still_clicks() {
++        let mut g = Gestures::default();
++        let p = pos2(10.0, 10.0);
++        let (a, _) = frame(&mut g, vec![button(true, p), touch(1, TouchPhase::Start, p)], 0.0);
++        assert_eq!(presses(&a), 0, "held");
++        let (b, act) = frame(&mut g, vec![button(false, p), touch(1, TouchPhase::End, p)], 30.0);
++        assert_eq!(presses(&b), 1);
++        assert!(b.iter().any(|e| matches!(e, Event::PointerButton { pressed: false, .. })));
++        assert_eq!(act, None);
++    }
++
++    #[test]
++    fn a_held_finger_presses_after_the_hold() {
++        let mut g = Gestures::default();
++        let p = pos2(10.0, 10.0);
++        frame(&mut g, vec![button(true, p), touch(1, TouchPhase::Start, p)], 0.0);
++        let (a, _) = frame(&mut g, vec![], HOLD_MS + 1.0);
++        assert_eq!(presses(&a), 1);
++    }
++
++    #[test]
++    fn two_fingers_tapping_undo_and_never_click() {
++        let mut g = Gestures::default();
++        let (p, q) = (pos2(10.0, 10.0), pos2(60.0, 10.0));
++        let (a, _) = frame(&mut g, vec![button(true, p), touch(1, TouchPhase::Start, p)], 0.0);
++        let (b, _) = frame(&mut g, vec![touch(2, TouchPhase::Start, q)], 20.0);
++        let (c, act) = frame(&mut g, vec![button(false, p), touch(1, TouchPhase::End, p), touch(2, TouchPhase::End, q)], 120.0);
++        for ev in [&a, &b, &c] {
++            assert_eq!(presses(ev), 0);
++            assert!(!ev.iter().any(|e| matches!(e, Event::PointerButton { pressed: false, .. })));
++        }
++        assert_eq!(act, Some(TapAction::Undo));
++    }
++
++    #[test]
++    fn three_fingers_redo_and_a_pinch_does_nothing() {
++        let mut g = Gestures::default();
++        let ps = [pos2(10.0, 10.0), pos2(40.0, 10.0), pos2(70.0, 10.0)];
++        frame(&mut g, vec![button(true, ps[0]), touch(1, TouchPhase::Start, ps[0])], 0.0);
++        frame(&mut g, vec![touch(2, TouchPhase::Start, ps[1]), touch(3, TouchPhase::Start, ps[2])], 15.0);
++        let (_, act) =
++            frame(&mut g, vec![touch(1, TouchPhase::End, ps[0]), touch(2, TouchPhase::End, ps[1]), touch(3, TouchPhase::End, ps[2])], 100.0);
++        assert_eq!(act, Some(TapAction::Redo));
++        // a pinch: two fingers that move apart
++        frame(&mut g, vec![button(true, ps[0]), touch(1, TouchPhase::Start, ps[0])], 1000.0);
++        frame(&mut g, vec![touch(2, TouchPhase::Start, ps[1])], 1010.0);
++        frame(&mut g, vec![touch(2, TouchPhase::Move, pos2(140.0, 10.0))], 1100.0);
++        let (_, act) = frame(&mut g, vec![touch(1, TouchPhase::End, ps[0]), touch(2, TouchPhase::End, pos2(140.0, 10.0))], 1200.0);
++        assert_eq!(act, None);
++    }
++
++    #[test]
++    fn mouse_and_trackpad_clicks_pass_untouched() {
++        let mut g = Gestures::default();
++        let p = pos2(5.0, 5.0);
++        let (a, _) = frame(&mut g, vec![button(true, p)], 0.0);
++        assert_eq!(presses(&a), 1);
++    }
++}
 diff --git a/apps/lightcraft-web/src/store.rs b/apps/lightcraft-web/src/store.rs
 index 7f32051..1d9e1ef 100644
 --- a/apps/lightcraft-web/src/store.rs
@@ -15958,7 +16254,7 @@ index 7f32051..1d9e1ef 100644
              if let Some(v) = g.bytes.remove(&oldest) {
                  g.total -= v.0.len();
 diff --git a/apps/lightcraft-web/src/web.rs b/apps/lightcraft-web/src/web.rs
-index 7977391..3e1cc7e 100644
+index 7977391..4fd1a57 100644
 --- a/apps/lightcraft-web/src/web.rs
 +++ b/apps/lightcraft-web/src/web.rs
 @@ -609,9 +609,12 @@ impl WebApp {
@@ -15984,16 +16280,30 @@ index 7977391..3e1cc7e 100644
          if let Some(w) = &self.workers {
              // `library.preferences ▸ cacheMb` is read by the session; the worker index prunes on
              // its own thread, so it gets the budget every frame and applies it on the next store.
-@@ -889,6 +894,8 @@ impl eframe::App for WebApp {
+@@ -889,6 +894,22 @@ impl eframe::App for WebApp {
      /// Pass the browser's raw input to the app hook before egui processes it, so prompt barriers
      /// and synthetic or dropped input are applied consistently with the desktop host.
      fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
 +        // a finger's touch force is not pen pressure (Apple Pencil's is)
 +        crate::mobile::pen_pressure_only(raw);
++        // phones and tablets: two-finger tap undoes, three-finger tap redoes; a gesture's fingers
++        // never tap the buttons under them
++        if lightcraft_ui_egui::theme::touch_mode() {
++            let (tap, hold) = crate::mobile::filter_gestures(raw);
++            if hold {
++                ctx.request_repaint_after(std::time::Duration::from_millis(75));
++            }
++            if let Some(tap) = tap {
++                match self.app.run(tap.command(), serde_json::json!({})) {
++                    Ok(_) => self.app.toast(ctx, lightcraft_ui_egui::i18n::tr(if tap == crate::mobile::TapAction::Undo { "Undo" } else { "Redo" })),
++                    Err(e) => self.app.toast(ctx, e),
++                }
++            }
++        }
          self.app.raw_input_hook(ctx, raw);
      }
  
-@@ -901,6 +908,8 @@ impl eframe::App for WebApp {
+@@ -901,6 +922,8 @@ impl eframe::App for WebApp {
          let ctx = ui.ctx().clone();
          self.import_dropped(&ctx);
          self.app.ui(ui);
@@ -16322,11 +16632,120 @@ index c40d16b..3df61cc 100644
  pub mod widgets;
  pub mod window_place;
  
+diff --git a/crates/ui-egui/src/panels/detail/filmstrip.rs b/crates/ui-egui/src/panels/detail/filmstrip.rs
+index 268d021..9792fd1 100644
+--- a/crates/ui-egui/src/panels/detail/filmstrip.rs
++++ b/crates/ui-egui/src/panels/detail/filmstrip.rs
+@@ -96,7 +96,7 @@ pub(crate) fn filmstrip(app: &mut LightcraftApp, ui: &mut egui::Ui, r: Rect) {
+             if !local.intersects(vp.expand2(vec2(cell_w * 4.0, 0.0))) {
+                 continue;
+             }
+-            let resp = ui.interact(cr, egui::Id::unique(("film", id.0)), Sense::click_and_drag());
++            let resp = ui.interact(cr, egui::Id::unique(("film", id.0)), crate::theme::photo_cell_sense());
+             let failed = app.renderer.thumb(*id).is_none() && app.renderer.failure(Slot::Thumb(*id)).is_some();
+             crate::widgets::announce(&resp, film_spoken(app.session.catalog.photo(*id).map_or("", |p| p.file_name.as_str()), failed));
+             register(ui, format!("film:{}", id.0), cr);
+diff --git a/crates/ui-egui/src/panels/grid.rs b/crates/ui-egui/src/panels/grid.rs
+index 556f809..de09df7 100644
+--- a/crates/ui-egui/src/panels/grid.rs
++++ b/crates/ui-egui/src/panels/grid.rs
+@@ -777,7 +777,7 @@ pub const BACKGROUND_THUMB_PRIORITY: u32 = 3;
+ fn cell(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId, r: Rect, square: bool, onscreen: bool, ppp: f32) {
+     let t = Tokens::get(ui.ctx());
+     let Some(photo) = app.session.catalog.photo(id).cloned() else { return };
+-    let resp = ui.interact(r, egui::Id::unique(("cell", id.0)), Sense::click_and_drag());
++    let resp = ui.interact(r, egui::Id::unique(("cell", id.0)), crate::theme::photo_cell_sense());
+     register(ui, format!("thumb:{}", id.0), r);
+     let state = app.session.selection.state_of(id);
+     let selected = state != lightcraft_engine::SelectionState::NotSelected;
+diff --git a/crates/ui-egui/src/render.rs b/crates/ui-egui/src/render.rs
+index e8c3a90..8ada94b 100644
+--- a/crates/ui-egui/src/render.rs
++++ b/crates/ui-egui/src/render.rs
+@@ -285,6 +285,9 @@ pub struct Renderer {
+     offload: Option<Box<dyn RenderOffload>>,
+     queue: Vec<Queued>,
+     seq: u64,
++    /// When this thread last ran a pool job inline (wasm; see [`Self::poll`]), monotonic ms.
++    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
++    last_inline_ms: f64,
+     /// Slot → (key, priority) of the request in flight (queued or running).
+     pending: HashMap<Slot, (u64, u32)>,
+     pub textures: HashMap<Slot, Tex>,
+@@ -416,6 +419,7 @@ impl Renderer {
+             offload: None,
+             queue: Vec::new(),
+             seq: 0,
++            last_inline_ms: f64::NEG_INFINITY,
+             pending: HashMap::new(),
+             textures: HashMap::new(),
+             live_hdr_histogram: None,
+@@ -682,6 +686,16 @@ impl Renderer {
+         }
+     }
+ 
++    /// Phones and tablets with render workers ([`crate::theme::touch_mode`] and an offload): the
++    /// jobs the workers can't take run on the UI thread in a browser, between frames, and a finger
++    /// on a frozen screen gets nothing. There, the work that is only a guess at what comes next is
++    /// skipped: the stand-in prepared ahead of the loupe's next photo and the prefetch of
++    /// neighbouring photos (the workers render a photo when it is shown). The grid's embedded
++    /// previews stay: for an unedited raw that preview is the thumbnail.
++    fn lite(&self) -> bool {
++        crate::theme::touch_mode() && self.offload.is_some()
++    }
++
+     /// Run jobs through `offload` from now on (instead of the job pool / inline).
+     pub fn set_offload(&mut self, offload: Box<dyn RenderOffload>) {
+         self.offload = Some(offload);
+@@ -790,6 +804,9 @@ impl Renderer {
+             return;
+         }
+         self.quick_tried.insert(slot, job.key);
++        if self.lite() && matches!(slot, Slot::QuickAhead(_)) {
++            return;
++        }
+         if matches!(slot, Slot::Preview | Slot::QuickAhead(_)) {
+             self.quick_edge.insert(slot, quick_edge(&job));
+         }
+@@ -914,7 +931,7 @@ impl Renderer {
+     /// Prepare a photo in the background (a [`Slot::Prefetch`] job runs once per key; a newer one
+     /// replaces it while queued). Memory stays bounded by the engine's source caches.
+     pub fn prefetch(&mut self, slot: Slot, mut job: RenderJob, priority: u32) {
+-        if self.prefetched.get(&slot) == Some(&job.key) {
++        if self.prefetched.get(&slot) == Some(&job.key) || self.lite() {
+             return;
+         }
+         self.prefetched.insert(slot, job.key);
+@@ -1215,12 +1232,20 @@ impl Renderer {
+         self.follow_catalog(&session.catalog, &session.media.availability);
+         self.frame += 1;
+         self.trim_stages();
+-        // wasm: run one job per frame on this thread, timed with the host clock
++        // wasm: run one job per frame on this thread, timed with the host clock. In touch mode
++        // not while a finger is on the screen, and at most one every 80 ms, so taps, swipes and
++        // pinches always get frames (the job waits; `pending` keeps the frames coming)
+         #[cfg(target_arch = "wasm32")]
+         let inline_ms = {
+-            let t0 = crate::monotonic_ms();
+-            self.pool.run_inline(1);
+-            crate::monotonic_ms() - t0
++            let now = crate::monotonic_ms();
++            let touching = crate::theme::touch_mode() && ctx.input(|i| i.any_touches() || i.pointer.any_down());
++            if touching || (crate::theme::touch_mode() && now - self.last_inline_ms < 80.0) {
++                0.0
++            } else {
++                self.pool.run_inline(1);
++                self.last_inline_ms = crate::monotonic_ms();
++                self.last_inline_ms - now
++            }
+         };
+         #[cfg(not(target_arch = "wasm32"))]
+         let inline_ms = 0.0;
 diff --git a/crates/ui-egui/src/theme.rs b/crates/ui-egui/src/theme.rs
-index de2be96..fa7d5a2 100644
+index de2be96..41ece38 100644
 --- a/crates/ui-egui/src/theme.rs
 +++ b/crates/ui-egui/src/theme.rs
-@@ -436,6 +436,45 @@ pub fn apply(ctx: &egui::Context) {
+@@ -436,6 +436,53 @@ pub fn apply(ctx: &egui::Context) {
      apply_kind(ctx, ThemeKind::default());
  }
  
@@ -16344,6 +16763,14 @@ index de2be96..fa7d5a2 100644
 +/// Whether touch mode is on ([`set_touch_mode`]).
 +pub fn touch_mode() -> bool {
 +    TOUCH_MODE.load(std::sync::atomic::Ordering::Relaxed)
++}
++
++/// How a photo cell (grid, filmstrip) senses the pointer. With a mouse: clicks, and drags that
++/// carry the selection to a sidebar row. In touch mode only taps: a finger drag must scroll the
++/// grid or the filmstrip (a cell that took drags left nothing to swipe), and a long press opens the
++/// photo's menu with the same actions.
++pub fn photo_cell_sense() -> egui::Sense {
++    if touch_mode() { egui::Sense::click() } else { egui::Sense::click_and_drag() }
 +}
 +
 +/// The touch adjustments of [`apply_kind`], for a style already themed.
@@ -16372,7 +16799,7 @@ index de2be96..fa7d5a2 100644
  /// Style `ctx` with `kind`. The visuals go to both of egui's styles, so egui following the
  /// system's dark/light setting on its own never swaps in its stock look.
  pub fn apply_kind(ctx: &egui::Context, kind: ThemeKind) {
-@@ -489,6 +528,9 @@ pub fn apply_kind(ctx: &egui::Context, kind: ThemeKind) {
+@@ -489,6 +536,9 @@ pub fn apply_kind(ctx: &egui::Context, kind: ThemeKind) {
          s.text_styles.insert(egui::TextStyle::Small, FontId::proportional(11.0));
          s.text_styles.insert(egui::TextStyle::Heading, FontId::new(16.0, FontFamily::Name(FONT_SEMIBOLD.into())));
          s.animation_time = 0.08;
