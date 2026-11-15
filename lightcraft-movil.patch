@@ -15371,10 +15371,10 @@ literal 0
 HcmV?d00001
 
 diff --git a/apps/lightcraft-web/index.html b/apps/lightcraft-web/index.html
-index b088ad1..ac5a4ba 100644
+index b088ad1..99e688c 100644
 --- a/apps/lightcraft-web/index.html
 +++ b/apps/lightcraft-web/index.html
-@@ -2,25 +2,209 @@
+@@ -2,25 +2,270 @@
  <html lang="en">
  <head>
    <meta charset="utf-8">
@@ -15571,6 +15571,67 @@ index b088ad1..ac5a4ba 100644
 +        setTimeout(() => note.remove(), 7000);
 +      }
 +
++      // ---- Recovering from a frozen screen ------------------------------------------------------
++      // iOS takes the graphics (WebGL) context away from a page when it needs memory or when the
++      // home-screen app comes back from the background; eframe can't rebuild it, so the picture
++      // would stay frozen. The library is saved in the browser's storage as you work, so the page
++      // reloads itself instead. The same goes for a crash of the app (a Rust panic). A loop of
++      // reloads is stopped after three in two minutes: then a button asks first.
++      const recoverBox = () => {
++        let box = document.getElementById("lightcraft_recover");
++        if (box) return box;
++        box = document.createElement("div");
++        box.id = "lightcraft_recover";
++        box.style.cssText = "position:fixed;inset:0;display:flex;flex-direction:column;gap:14px;align-items:center;justify-content:center;background:#1c1c1ce6;color:#e8e8e8;font:16px/1.4 system-ui,-apple-system,sans-serif;z-index:20;text-align:center;padding:24px";
++        document.body.appendChild(box);
++        return box;
++      };
++      const es = (nav.language || "").toLowerCase().startsWith("es");
++      const recover = (why) => {
++        if (m.recovering) return;
++        m.recovering = true;
++        console.warn("lightcraft: recovering (" + why + ")");
++        let recent = [];
++        try { recent = JSON.parse(sessionStorage.getItem("lightcraftReloads") || "[]").filter((t) => Date.now() - t < 120000); } catch (_) {}
++        const box = recoverBox();
++        if (recent.length < 3) {
++          try { sessionStorage.setItem("lightcraftReloads", JSON.stringify([...recent, Date.now()])); } catch (_) {}
++          box.textContent = es ? "Recuperando LightCraft…" : "Recovering LightCraft…";
++          setTimeout(() => location.reload(), 500);
++        } else {
++          box.innerHTML = "";
++          const p = document.createElement("div");
++          p.textContent = es ? "LightCraft se detuvo varias veces seguidas. Prueba con menos fotos abiertas a la vez o reinicia la app." : "LightCraft stopped several times in a row. Try fewer photos at once, or restart the app.";
++          const b = document.createElement("button");
++          b.textContent = es ? "Reiniciar" : "Restart";
++          b.style.cssText = "font:600 16px system-ui,-apple-system,sans-serif;padding:12px 22px;border-radius:12px;border:0;background:#f2a516;color:#1c1c1c";
++          b.onclick = () => { try { sessionStorage.removeItem("lightcraftReloads"); } catch (_) {} location.reload(); };
++          box.append(p, b);
++        }
++      };
++      m.recover = recover;
++      const cv = canvas();
++      if (cv) {
++        cv.addEventListener("webglcontextlost", (e) => { e.preventDefault(); recover("graphics context lost"); }, false);
++      }
++      // back from the background: is the graphics context still there?
++      const checkContext = () => {
++        if (document.visibilityState !== "visible" || !m.started) return;
++        const c = canvas();
++        const gl = c && (c.getContext("webgl2") || c.getContext("webgl"));
++        if (gl && gl.isContextLost()) recover("graphics context lost in the background");
++      };
++      document.addEventListener("visibilitychange", () => setTimeout(checkContext, 300));
++      addEventListener("pageshow", (e) => { if (e.persisted) setTimeout(checkContext, 300); });
++      // a crash of the app's Rust code: eframe logs "panicked at" and stops drawing
++      const consoleError = console.error.bind(console);
++      console.error = (...args) => {
++        consoleError(...args);
++        try {
++          if (m.started && args.some((a) => String(a && (a.message || a)).includes("panicked at"))) setTimeout(() => recover("app crashed"), 1500);
++        } catch (_) {}
++      };
++
 +      // the canvas is resized by eframe; after a rotation give it a moment, then a resize event
 +      addEventListener("orientationchange", () => setTimeout(() => dispatchEvent(new Event("resize")), 250));
 +
@@ -15590,7 +15651,7 @@ index b088ad1..ac5a4ba 100644
    <script type="module">
      import init, { start, command } from "./lightcraft_web.js";
      (async () => {
-@@ -30,18 +214,21 @@
+@@ -30,18 +275,24 @@
          .then(async response => response.ok ? new Uint8Array(await response.arrayBuffer()) : new Uint8Array())
          .catch(() => new Uint8Array());
        // Compile once; the render workers (worker.js) instantiate the same compiled module.
@@ -15609,6 +15670,9 @@ index b088ad1..ac5a4ba 100644
        // automation: `await lightcraft.command("library.info", "{}")` → JSON text
        globalThis.lightcraft = { command };
        start(font);
++      globalThis.lightcraftMobile.started = true;
++      // a good start: forget earlier recoveries after a minute of running
++      setTimeout(() => { try { sessionStorage.removeItem("lightcraftReloads"); } catch (_) {} }, 60000);
 +      document.getElementById("lightcraft_canvas").focus({ preventScroll: true });
      })().catch((e) => {
        console.error(e);
@@ -15657,10 +15721,10 @@ index 631e09f..8dbecd4 100644
  mod web;
 diff --git a/apps/lightcraft-web/src/mobile.rs b/apps/lightcraft-web/src/mobile.rs
 new file mode 100644
-index 0000000..bf44406
+index 0000000..e6b9e73
 --- /dev/null
 +++ b/apps/lightcraft-web/src/mobile.rs
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,197 @@
 +//! Phones and tablets (iPhone, iPad, Android): the browser host's side of LightCraft's touch
 +//! support. The page (`index.html`) works out what the device is and keeps a little state the
 +//! browser only reports to its own event handlers; this module reads it each frame:
@@ -15726,25 +15790,89 @@ index 0000000..bf44406
 +    /// At most this many render workers: each is a second copy of the module with its own
 +    /// memory, and mobile browsers close a tab that uses too much.
 +    pub fn max_workers(&self) -> usize {
-+        if self.phone || self.ios { 2 } else if self.touch { 3 } else { 4 }
++        if self.phone {
++            1
++        } else if self.ios || self.touch {
++            2
++        } else {
++            4
++        }
 +    }
 +
 +    /// The main thread's memory budget for original photo bytes.
 +    pub fn originals_budget(&self) -> usize {
 +        if self.phone {
-+            256 << 20
++            192 << 20
 +        } else if self.touch || self.ios {
-+            384 << 20
++            256 << 20
 +        } else {
 +            768 << 20
 +        }
 +    }
++
++    /// Phones and tablets only: the engine's memory budget on the main thread (its caches get
++    /// half). The engine's default is a quarter of RAM up to 1.5 GB, and the browser doesn't tell
++    /// a page how much RAM there is, so a page took the full 1.5 GB: too much for iOS, which then
++    /// freezes or closes the page.
++    pub fn main_budget(&self) -> Option<usize> {
++        if self.phone {
++            Some(448 << 20)
++        } else if self.touch || self.ios {
++            Some(640 << 20)
++        } else {
++            None
++        }
++    }
++
++    /// Phones and tablets only: each render worker's engine memory budget, in MB.
++    pub fn worker_budget_mb(&self) -> Option<u32> {
++        if self.phone {
++            Some(320)
++        } else if self.touch || self.ios {
++            Some(448)
++        } else {
++            None
++        }
++    }
++
++    /// Phones and tablets only: a worker whose WebAssembly memory has grown past this many bytes
++    /// is replaced by a fresh one once it is idle. WebAssembly memory only grows: one huge raw
++    /// leaves the worker that decoded it holding that much for the rest of the session.
++    pub fn recycle_bytes(&self) -> Option<usize> {
++        if self.phone {
++            Some(640 << 20)
++        } else if self.touch || self.ios {
++            Some(900 << 20)
++        } else {
++            None
++        }
++    }
++}
++
++/// The worker settings [`setup`] chose (read by `workers.rs` when it starts workers):
++/// engine budget per worker in MB and the recycle threshold in bytes (0: none, desktop).
++static WORKER_BUDGET_MB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
++static RECYCLE_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++
++/// Each render worker's engine memory budget in MB (`None`: the engine's default).
++pub(crate) fn worker_budget_mb() -> Option<u32> {
++    Some(WORKER_BUDGET_MB.load(std::sync::atomic::Ordering::Relaxed)).filter(|m| *m > 0)
++}
++
++/// Replace an idle worker whose memory grew past this many bytes (`None`: never).
++pub(crate) fn recycle_bytes() -> Option<usize> {
++    Some(RECYCLE_BYTES.load(std::sync::atomic::Ordering::Relaxed)).filter(|b| *b > 0)
 +}
 +
 +/// Set up the UI for the device once, when the app starts: touch styling, the UI scale and a
 +/// layout that fits a small screen.
 +pub(crate) fn setup(ctx: &egui::Context, app: &mut LightcraftApp, device: Device) {
 +    crate::store::set_mem_budget(device.originals_budget());
++    if let Some(b) = device.main_budget() {
++        app.session.set_memory_budget(b);
++    }
++    WORKER_BUDGET_MB.store(device.worker_budget_mb().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
++    RECYCLE_BYTES.store(device.recycle_bytes().unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
 +    if !device.touch {
 +        return;
 +    }
@@ -15756,7 +15884,14 @@ index 0000000..bf44406
 +    // the page's width in points once zoomed
 +    let width = web_sys::window().and_then(|w| w.inner_width().ok()).and_then(|v| v.as_f64()).unwrap_or(1024.0) as f32 / device.zoom;
 +    lightcraft_ui_egui::touch_bar::fit_layout_to_screen(app, width);
-+    log::info!("lightcraft: touch device (phone: {}, iOS: {}), UI zoom {:.2}, {width:.0} points wide", device.phone, device.ios, device.zoom);
++    log::info!(
++        "lightcraft: touch device (phone: {}, iOS: {}), UI zoom {:.2}, {width:.0} points wide, memory {} MB + {} MB per worker",
++        device.phone,
++        device.ios,
++        device.zoom,
++        device.main_budget().unwrap_or(0) >> 20,
++        device.worker_budget_mb().unwrap_or(0)
++    );
 +}
 +
 +/// Full screen, each frame before the app's logic: hand a requested change (View ▸ Enter Full
@@ -15867,17 +16002,245 @@ index 7977391..3e1cc7e 100644
          // eframe's web runner ignores `ViewportCommand::Title`: name the open photo in the page title
          let title = self.app.page_title(self.files.is_dirty() || self.flushing.get());
          if title != self.title
+diff --git a/apps/lightcraft-web/src/wire.rs b/apps/lightcraft-web/src/wire.rs
+index e7202bb..66bb756 100644
+--- a/apps/lightcraft-web/src/wire.rs
++++ b/apps/lightcraft-web/src/wire.rs
+@@ -155,9 +155,16 @@ pub fn thumb_storage_key(hex: &str) -> String {
+     format!("thumbs/{hex}.jpg")
+ }
+ 
+-/// Decoded sources per worker.
++/// Decoded sources per worker (desktop browsers; see [`worker_source_bytes`]).
+ const WORKER_SOURCE_BYTES: usize = 192 << 20;
+ 
++/// Decoded sources per worker: [`WORKER_SOURCE_BYTES`], or a quarter of the worker's memory
++/// budget when that is smaller (phones and tablets lower the budget: their browsers close a page
++/// whose workers hold too much memory).
++pub fn worker_source_bytes() -> usize {
++    (lightcraft_engine::memory::budget() / 4).clamp(48 << 20, WORKER_SOURCE_BYTES)
++}
++
+ /// The synchronous part of a worker: decoded-source cache + rendering.
+ pub struct WorkerCore {
+     sources: Lru<String, DecodedSource>,
+@@ -167,7 +174,7 @@ pub struct WorkerCore {
+ 
+ impl Default for WorkerCore {
+     fn default() -> Self {
+-        WorkerCore { sources: Lru::new(WORKER_SOURCE_BYTES), media: MediaCache::default(), stages: HashMap::new() }
++        WorkerCore { sources: Lru::new(worker_source_bytes()), media: MediaCache::default(), stages: HashMap::new() }
+     }
+ }
+ 
+diff --git a/apps/lightcraft-web/src/workers.rs b/apps/lightcraft-web/src/workers.rs
+index 56f7abe..ff15fd0 100644
+--- a/apps/lightcraft-web/src/workers.rs
++++ b/apps/lightcraft-web/src/workers.rs
+@@ -54,10 +54,15 @@ thread_local! {
+ }
+ 
+ /// Entry point of a render worker (called by `worker.js` after instantiating the module).
+-/// `store` is the backend kind the page uses ("opfs", "idb" or "memory").
++/// `store` is the backend kind the page uses ("opfs", "idb" or "memory"); `memory_mb`, when the
++/// page sends one (phones and tablets), is the worker's engine memory budget.
+ #[wasm_bindgen]
+-pub fn worker_main(store: String) {
++pub fn worker_main(store: String, memory_mb: Option<u32>) {
+     eframe::WebLogger::init(log::LevelFilter::Info).ok();
++    // before the first job builds the worker's caches, which size themselves from the budget
++    if let Some(mb) = memory_mb.filter(|mb| *mb >= 64) {
++        lightcraft_engine::memory::set_budget((mb as usize) << 20);
++    }
+     let scope: web_sys::DedicatedWorkerGlobalScope = js_sys::global().unchecked_into();
+     // The main thread sends jobs only after "ready", i.e. once storage is open, and one at a time.
+     wasm_bindgen_futures::spawn_local(async move {
+@@ -142,11 +147,24 @@ async fn handle(scope: &web_sys::DedicatedWorkerGlobalScope, backend: Option<Bac
+         }
+     }
+     set(&out, "ms", &(now() - t0).into());
++    set(&out, "memBytes", &(wasm_memory_bytes() as f64).into());
+     if let Err(e) = scope.post_message_with_transfer(&out, &transfer) {
+         log::error!("render worker: post: {e:?}");
+     }
+ }
+ 
++/// Size of this instance's WebAssembly memory (it only grows; pages of 64 KiB).
++fn wasm_memory_bytes() -> usize {
++    #[cfg(target_arch = "wasm32")]
++    {
++        core::arch::wasm32::memory_size::<0>() * 65536
++    }
++    #[cfg(not(target_arch = "wasm32"))]
++    {
++        0
++    }
++}
++
+ // ---------------------------------------------------------------------------------------------
+ // main side
+ 
+@@ -190,6 +208,10 @@ struct Inner {
+     remote_done: u64,
+     inline_done: u64,
+     inline_this_frame: bool,
++    /// The storage backend kind the workers open (a replacement worker needs it too).
++    store: String,
++    /// Workers replaced because their memory grew too large (phones and tablets).
++    recycled: u64,
+ }
+ 
+ impl Inner {
+@@ -246,6 +268,8 @@ impl Workers {
+             remote_done: 0,
+             inline_done: 0,
+             inline_this_frame: false,
++            store: store.to_string(),
++            recycled: 0,
+         })));
+         let module = get(&js_sys::global(), "lightcraftModule");
+         if module.is_undefined() {
+@@ -261,37 +285,14 @@ impl Workers {
+             }
+             // The callbacks name their worker by its place in `workers`; a failed attempt takes none.
+             let i = slots.peek();
+-            let opts = web_sys::WorkerOptions::new();
+-            opts.set_type(web_sys::WorkerType::Module);
+-            opts.set_name(&format!("lightcraft-render-{attempt}"));
+-            let worker = match web_sys::Worker::new_with_options("./worker.js", &opts) {
++            let worker = match w.spawn(i, &format!("lightcraft-render-{attempt}"), &module, store) {
+                 Ok(x) => x,
+                 Err(e) => {
+-                    log::warn!("render worker {attempt}: {e:?}");
++                    log::warn!("render worker {attempt}: {e}");
+                     failed += 1;
+                     continue;
+                 }
+             };
+-            let me = w.clone();
+-            let onmessage = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| me.on_message(i, e.data()));
+-            worker.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+-            onmessage.forget();
+-            let me = w.clone();
+-            let onerror = Closure::<dyn FnMut(JsValue)>::new(move |e: JsValue| me.on_error(i, e));
+-            worker.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+-            onerror.forget();
+-            let init = Object::new();
+-            set(&init, "module", &module);
+-            set(&init, "store", &store.into());
+-            if let Err(e) = worker.post_message(&init) {
+-                log::warn!("render worker {attempt}: {e:?}");
+-                // It never joins the list, so it must not answer to the index of the next worker.
+-                worker.set_onmessage(None);
+-                worker.set_onerror(None);
+-                worker.terminate();
+-                failed += 1;
+-                continue;
+-            }
+             w.0.borrow_mut().workers.push(W { worker, ready: false, dead: false, busy: None });
+             slots.commit();
+             failed = 0;
+@@ -299,6 +300,74 @@ impl Workers {
+         w
+     }
+ 
++    /// Start a worker that answers as `workers[i]` and post it the module and storage kind.
++    fn spawn(&self, i: usize, name: &str, module: &JsValue, store: &str) -> Result<web_sys::Worker, String> {
++        let opts = web_sys::WorkerOptions::new();
++        opts.set_type(web_sys::WorkerType::Module);
++        opts.set_name(name);
++        let worker = web_sys::Worker::new_with_options("./worker.js", &opts).map_err(|e| format!("{e:?}"))?;
++        let me = self.clone();
++        let onmessage = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| me.on_message(i, e.data()));
++        worker.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
++        onmessage.forget();
++        let me = self.clone();
++        let onerror = Closure::<dyn FnMut(JsValue)>::new(move |e: JsValue| me.on_error(i, e));
++        worker.set_onerror(Some(onerror.as_ref().unchecked_ref()));
++        onerror.forget();
++        let init = Object::new();
++        set(&init, "module", module);
++        set(&init, "store", &store.into());
++        if let Some(mb) = crate::mobile::worker_budget_mb() {
++            set(&init, "memMb", &mb.into());
++        }
++        if let Err(e) = worker.post_message(&init) {
++            // It never joins the list, so it must not answer to the index of the next worker.
++            worker.set_onmessage(None);
++            worker.set_onerror(None);
++            worker.terminate();
++            return Err(format!("{e:?}"));
++        }
++        Ok(worker)
++    }
++
++    /// Replace idle worker `i` by a fresh one when its WebAssembly memory grew past the device's
++    /// limit ([`crate::mobile::recycle_bytes`]): that memory never shrinks, and phones and tablets
++    /// freeze or close a page that holds too much. The photos it had decoded go to any worker.
++    fn recycle_if_bloated(&self, i: usize, mem: usize) {
++        let Some(limit) = crate::mobile::recycle_bytes() else { return };
++        if mem <= limit {
++            return;
++        }
++        let module = get(&js_sys::global(), "lightcraftModule");
++        if module.is_undefined() {
++            return;
++        }
++        let (store, n) = {
++            let g = self.0.borrow();
++            match g.workers.get(i) {
++                Some(w) if !w.dead && w.busy.is_none() => (g.store.clone(), g.recycled),
++                _ => return,
++            }
++        };
++        log::info!("render worker {i}: {} MB of memory, starting a fresh one", mem >> 20);
++        let fresh = self.spawn(i, &format!("lightcraft-render-{i}-{}", n + 1), &module, &store);
++        let mut g = self.0.borrow_mut();
++        g.recycled += 1;
++        g.affinity.retain(|_, w| *w != i);
++        if let Some(w) = g.workers.get_mut(i) {
++            w.worker.set_onmessage(None);
++            w.worker.set_onerror(None);
++            w.worker.terminate();
++            match fresh {
++                Ok(worker) => *w = W { worker, ready: false, dead: false, busy: None },
++                Err(e) => {
++                    log::warn!("render worker {i}: no replacement ({e})");
++                    w.dead = true;
++                }
++            }
++        }
++    }
++
+     fn on_error(&self, i: usize, e: JsValue) {
+         let msg = get(&e, "message").as_string().unwrap_or_else(|| format!("{e:?}"));
+         log::error!("render worker {i} failed: {msg}");
+@@ -327,6 +396,14 @@ impl Workers {
+     }
+ 
+     fn on_message(&self, i: usize, data: JsValue) {
++        let mem = get(&data, "memBytes").as_f64().unwrap_or(0.0) as usize;
++        self.on_message_inner(i, data);
++        if mem > 0 {
++            self.recycle_if_bloated(i, mem);
++        }
++    }
++
++    fn on_message_inner(&self, i: usize, data: JsValue) {
+         let mut g = self.0.borrow_mut();
+         let g = &mut *g;
+         g.ctx.request_repaint();
 diff --git a/apps/lightcraft-web/sw.js b/apps/lightcraft-web/sw.js
 new file mode 100644
-index 0000000..3575739
+index 0000000..cc3277d
 --- /dev/null
 +++ b/apps/lightcraft-web/sw.js
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,60 @@
 +// LightCraft's service worker: makes the installed app open without a network connection.
 +// The bundle's file names are the same in every version, so it asks the network first (a new
 +// release is picked up as soon as you are online) and falls back to the copy it kept.
 +// The library itself is not here: it lives in the browser's storage (OPFS / IndexedDB).
-+const CACHE = "lightcraft-app-v1";
++const CACHE = "lightcraft-app-v2";
 +const CORE = [
 +  "./",
 +  "./index.html",
@@ -15916,7 +16279,13 @@ index 0000000..3575739
 +    const cache = await caches.open(CACHE);
 +    try {
 +      const res = await fetch(req, { cache: "no-cache" });
-+      if (res.ok && res.type === "basic") cache.put(req, res.clone()).catch(() => {});
++      if (res.ok && res.type === "basic") {
++        // keep a copy only when the file changed: the app module is about 13 MB, and copying it
++        // on every start costs the iPad memory and time for nothing
++        const kept = await cache.match(req);
++        const tag = (r) => r && (r.headers.get("etag") || r.headers.get("last-modified"));
++        if (!kept || !tag(res) || tag(kept) !== tag(res)) cache.put(req, res.clone()).catch(() => {});
++      }
 +      return res;
 +    } catch (err) {
 +      // offline: the kept copy (the app page for any URL of it, e.g. with ?store=idb)
@@ -15927,6 +16296,20 @@ index 0000000..3575739
 +    }
 +  })());
 +});
+diff --git a/apps/lightcraft-web/worker.js b/apps/lightcraft-web/worker.js
+index 3a02399..65dc75f 100644
+--- a/apps/lightcraft-web/worker.js
++++ b/apps/lightcraft-web/worker.js
+@@ -7,7 +7,8 @@ self.onmessage = async (e) => {
+   self.onmessage = null;
+   try {
+     await init({ module_or_path: e.data.module });
+-    worker_main(e.data.store);
++    // memMb: the worker's memory budget on phones and tablets (absent on desktop browsers)
++    worker_main(e.data.store, e.data.memMb);
+   } catch (err) {
+     // surfaces as the Worker's `error` event on the page, which falls back to inline rendering
+     setTimeout(() => { throw err; });
 diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
 index c40d16b..3df61cc 100644
 --- a/crates/ui-egui/src/lib.rs
