@@ -16344,7 +16344,7 @@ index e7202bb..66bb756 100644
  }
  
 diff --git a/apps/lightcraft-web/src/workers.rs b/apps/lightcraft-web/src/workers.rs
-index 56f7abe..ff15fd0 100644
+index 56f7abe..8b21cab 100644
 --- a/apps/lightcraft-web/src/workers.rs
 +++ b/apps/lightcraft-web/src/workers.rs
 @@ -54,10 +54,15 @@ thread_local! {
@@ -16450,7 +16450,7 @@ index 56f7abe..ff15fd0 100644
              w.0.borrow_mut().workers.push(W { worker, ready: false, dead: false, busy: None });
              slots.commit();
              failed = 0;
-@@ -299,6 +300,74 @@ impl Workers {
+@@ -299,7 +300,112 @@ impl Workers {
          w
      }
  
@@ -16523,9 +16523,47 @@ index 56f7abe..ff15fd0 100644
 +    }
 +
      fn on_error(&self, i: usize, e: JsValue) {
++        self.on_error_inner(i, e);
++        self.replace_dead(i);
++    }
++
++    /// Phones and tablets: a worker that crashed is replaced (a few times per session), so the
++    /// renders never fall back to the UI thread, where they would freeze the screen.
++    fn replace_dead(&self, i: usize) {
++        /// Replacements of crashed workers per session: a photo that crashes every worker must
++        /// not make the page start workers without end.
++        const MAX_REPLACED: u64 = 6;
++        if crate::mobile::recycle_bytes().is_none() {
++            return;
++        }
++        let module = get(&js_sys::global(), "lightcraftModule");
++        let (store, n) = {
++            let g = self.0.borrow();
++            match g.workers.get(i) {
++                Some(w) if w.dead && g.recycled < MAX_REPLACED && !module.is_undefined() => (g.store.clone(), g.recycled),
++                _ => return,
++            }
++        };
++        let fresh = self.spawn(i, &format!("lightcraft-render-{i}-{}", n + 1), &module, &store);
++        let mut g = self.0.borrow_mut();
++        g.recycled += 1;
++        g.affinity.retain(|_, w| *w != i);
++        match fresh {
++            Ok(worker) => {
++                log::info!("render worker {i}: replaced after a crash");
++                if let Some(w) = g.workers.get_mut(i) {
++                    *w = W { worker, ready: false, dead: false, busy: None };
++                }
++            }
++            Err(e) => log::warn!("render worker {i}: no replacement ({e})"),
++        }
++    }
++
++    fn on_error_inner(&self, i: usize, e: JsValue) {
          let msg = get(&e, "message").as_string().unwrap_or_else(|| format!("{e:?}"));
          log::error!("render worker {i} failed: {msg}");
-@@ -327,6 +396,14 @@ impl Workers {
+         let mut g = self.0.borrow_mut();
+@@ -327,6 +433,14 @@ impl Workers {
      }
  
      fn on_message(&self, i: usize, data: JsValue) {
@@ -16620,6 +16658,24 @@ index 3a02399..65dc75f 100644
    } catch (err) {
      // surfaces as the Worker's `error` event on the page, which falls back to inline rendering
      setTimeout(() => { throw err; });
+diff --git a/crates/engine/src/files/load.rs b/crates/engine/src/files/load.rs
+index 0e396dd..e66a154 100644
+--- a/crates/engine/src/files/load.rs
++++ b/crates/engine/src/files/load.rs
+@@ -105,9 +105,11 @@ fn load_bytes_now(
+         };
+         // single outlier photosites, replaced in the mosaic before anything is developed from it (#1345)
+         if with.outliers {
+-            let t = std::time::Instant::now();
++            // `Instant::now()` panics on wasm32-unknown-unknown (the browser build): only read the
++            // clock when profiling, as the pipeline does
++            let t = lightcraft_pipeline::profiling().then(std::time::Instant::now);
+             let n = raw.suppress_hot_pixels_with(super::hot_pixel_limit());
+-            if lightcraft_pipeline::profiling() {
++            if let Some(t) = t {
+                 eprintln!("[profile] raw outliers: {n} photosites replaced in {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+             }
+         }
 diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
 index c40d16b..3df61cc 100644
 --- a/crates/ui-egui/src/lib.rs
