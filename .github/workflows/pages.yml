@@ -1,0 +1,128 @@
+# LightCraft para iPad y móviles en GitHub Pages: https://<usuario>.github.io/<repo>/
+#
+# Este repositorio no necesita tener todo el código de LightCraft: si solo tiene este archivo y
+# `lightcraft-movil.patch`, el flujo descarga LightCraft v0.21.1 desde su repositorio oficial
+# (github.com/storytold/lightcraft), le aplica el parche (versión táctil, iPad, Apple Pencil,
+# pantalla completa, app de inicio) y lo publica. Si el repositorio sí tiene el código completo
+# (carpetas apps/, crates/, xtask/), compila ese.
+#
+# Ubicación obligatoria de este archivo: .github/workflows/pages.yml
+# Ajuste único: Settings ▸ Pages ▸ Build and deployment ▸ Source: "GitHub Actions".
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  LIGHTCRAFT_REPO: storytold/lightcraft
+  LIGHTCRAFT_TAG: v0.21.1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Get this repository
+        uses: actions/checkout@v4
+        with:
+          path: mine
+
+      - name: Get the LightCraft source
+        run: |
+          if [ -f mine/Cargo.toml ] && [ -d mine/apps/lightcraft-web ] && [ -d mine/crates ] && [ -d mine/xtask ]; then
+            echo "Full source in this repository: building it"
+            mv mine src
+          else
+            echo "Downloading LightCraft $LIGHTCRAFT_TAG and applying lightcraft-movil.patch"
+            git clone --depth 1 --branch "$LIGHTCRAFT_TAG" "https://github.com/$LIGHTCRAFT_REPO" src
+            patch_file=$(find mine -name 'lightcraft-movil.patch' -not -path '*/.git/*' | head -1)
+            if [ -z "$patch_file" ]; then
+              echo "::error::Falta el archivo lightcraft-movil.patch en el repositorio"
+              exit 1
+            fi
+            git -C src apply --whitespace=nowarn "$PWD/$patch_file"
+            git -C src status --short | head -40
+          fi
+
+      # The release browser build links the whole app into one module with fat LTO: give the
+      # runner swap so it can't run out of memory.
+      - name: Add swap
+        run: |
+          sudo fallocate -l 10G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap /swapfile2 && sudo swapon /swapfile2
+          free -h
+
+      - name: Rust toolchain (with the WebAssembly target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src
+          shared-key: pages-web
+
+      - name: wasm-bindgen version (from Cargo.lock)
+        id: bindgen
+        working-directory: src
+        run: |
+          v=$(awk '$0 == "name = \"wasm-bindgen\"" { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)
+          echo "wasm-bindgen $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Install wasm-bindgen CLI (prebuilt)
+        uses: taiki-e/install-action@v2
+        continue-on-error: true
+        with:
+          tool: wasm-bindgen@${{ steps.bindgen.outputs.version }}
+
+      - name: Install wasm-bindgen CLI (from source, if the prebuilt one is missing)
+        run: |
+          want="${{ steps.bindgen.outputs.version }}"
+          have=$(wasm-bindgen --version 2>/dev/null | awk '{print $2}')
+          if [ "$have" != "$want" ]; then
+            cargo install wasm-bindgen-cli --version "$want" --locked --force
+          fi
+          wasm-bindgen --version
+
+      - name: Build the web app
+        working-directory: src
+        run: cargo xtask web
+
+      - name: Prepare the site
+        working-directory: src
+        run: |
+          site=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')/web-site
+          mkdir -p "$GITHUB_WORKSPACE/_site"
+          cp -r "$site"/. "$GITHUB_WORKSPACE/_site/"
+          find "$GITHUB_WORKSPACE/_site" \( -name '*.gz' -o -name '*.br' \) -delete
+          touch "$GITHUB_WORKSPACE/_site/.nojekyll"
+          ls -la "$GITHUB_WORKSPACE/_site"
+          du -sh "$GITHUB_WORKSPACE/_site"
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
