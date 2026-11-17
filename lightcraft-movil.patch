@@ -16714,6 +16714,114 @@ index 556f809..de09df7 100644
      register(ui, format!("thumb:{}", id.0), r);
      let state = app.session.selection.state_of(id);
      let selected = state != lightcraft_engine::SelectionState::NotSelected;
+diff --git a/crates/ui-egui/src/region.rs b/crates/ui-egui/src/region.rs
+index 2655231..270ff1a 100644
+--- a/crates/ui-egui/src/region.rs
++++ b/crates/ui-egui/src/region.rs
+@@ -102,6 +102,18 @@ pub const CPU_DRAFT_SCALE: f32 = 0.6;
+ /// A draft's time is its render plus the frame that shows it (the texture upload is part of it).
+ pub const DRAFT_BUDGET_MS: f64 = 16.0;
+ 
++/// Phones and tablets ([`crate::theme::touch_mode`]), where the CPU renders every draft (the
++/// browser build has no GPU pipeline): instead of the fixed [`CPU_DRAFT_SCALE`], the draft scale is
++/// learned from how long this device's drafts take, aiming at this time per draft (ms), about 20
++/// updates a second while a slider moves; a faster device gets larger drafts, a slower one smaller.
++pub const TOUCH_DRAFT_TARGET_MS: f64 = 50.0;
++
++/// The first drag's draft scale on a touch device, before any draft was timed.
++pub const TOUCH_DRAFT_START: f32 = 0.4;
++
++/// The smallest learned draft scale (a fifth of the canvas: soft, but it moves).
++pub const TOUCH_DRAFT_MIN: f32 = 0.2;
++
+ /// Full-size drafts this many times over budget give up on full size in the middle of the drag:
+ /// a drag at 200 ms a step is worse than one jump in resolution.
+ const GIVE_UP_FACTOR: f64 = 2.0;
+@@ -166,6 +178,12 @@ pub struct DragScale {
+     pending: Option<f64>,
+     /// Pairs whose full-size drafts went over budget, the one remembered longest ago first.
+     verdicts: std::collections::VecDeque<((lightcraft_catalog::PhotoId, String), Verdict)>,
++    /// Touch devices: the draft scale learned from this device's draft times
++    /// ([`TOUCH_DRAFT_TARGET_MS`]); `None` before the first timed draft.
++    learned: Option<f32>,
++    /// Touch devices: key of the draft last timed in this drag, and how many were timed.
++    learned_seen: Option<u64>,
++    learned_n: usize,
+ }
+ 
+ impl DragScale {
+@@ -185,7 +203,13 @@ impl DragScale {
+         }
+         let key = (photo, control.to_string());
+         let small = matches!(self.verdict(&key), Some(Verdict::Slow { until, .. }) if now < until);
+-        let s = if gpu && !small { 1.0 } else { CPU_DRAFT_SCALE };
++        let s = if gpu && !small {
++            1.0
++        } else if crate::theme::touch_mode() {
++            self.learned.unwrap_or(TOUCH_DRAFT_START)
++        } else {
++            CPU_DRAFT_SCALE
++        };
+         self.current = Some((key, s));
+         self.seen = shown;
+         Some(s)
+@@ -197,6 +221,10 @@ impl DragScale {
+     /// drafts, each as its render plus the frame that uploaded and showed it, and gives up on full
+     /// size when they are far over budget.
+     pub fn observe(&mut self, key: u64, render_ms: f64, last_frame_ms: Option<f64>) {
++        if crate::theme::touch_mode() && matches!(self.current, Some((_, s)) if s < 1.0) {
++            self.learn(key, render_ms);
++            return;
++        }
+         let full = matches!(self.current, Some((_, s)) if s >= 1.0);
+         if !full {
+             self.pending = None;
+@@ -224,6 +252,36 @@ impl DragScale {
+         }
+     }
+ 
++    /// Touch devices: time a small draft of the current drag and learn the scale that would take
++    /// [`TOUCH_DRAFT_TARGET_MS`] (a draft's cost follows its pixels, the square of its scale). The
++    /// first draft of a drag is left out: it rebuilds the stage caches the others reuse. The drag
++    /// keeps its scale (no jumps in resolution), unless its drafts are three times too slow; the
++    /// next drag starts at what was learned.
++    fn learn(&mut self, key: u64, render_ms: f64) {
++        if self.learned_seen == Some(key) || !render_ms.is_finite() || render_ms <= 0.0 {
++            return;
++        }
++        self.learned_seen = Some(key);
++        self.learned_n += 1;
++        if self.learned_n < 2 {
++            return;
++        }
++        let Some((_, s)) = self.current.as_mut() else { return };
++        let ideal = (f64::from(*s) * (TOUCH_DRAFT_TARGET_MS / render_ms).sqrt()) as f32;
++        let ideal = if ideal.is_finite() { ideal.clamp(TOUCH_DRAFT_MIN, 1.0) } else { TOUCH_DRAFT_MIN };
++        // smoothed: one slow moment (the device warming up, another app) doesn't swing it
++        let learned = self.learned.unwrap_or(*s);
++        self.learned = Some((learned * 0.6 + ideal * 0.4).clamp(TOUCH_DRAFT_MIN, 1.0));
++        if render_ms > TOUCH_DRAFT_TARGET_MS * 3.0 && ideal < *s {
++            *s = ideal;
++        }
++    }
++
++    /// The draft scale learned on a touch device (`None` before one was timed).
++    pub fn learned_scale(&self) -> Option<f32> {
++        self.learned
++    }
++
+     /// Remember drags of `control` on `photo` as too slow for full-size drafts, for good (tests).
+     #[cfg(test)]
+     pub fn remember_slow(&mut self, photo: lightcraft_catalog::PhotoId, control: &str) {
+@@ -280,6 +338,8 @@ impl DragScale {
+         self.samples.clear();
+         self.seen = None;
+         self.pending = None;
++        self.learned_seen = None;
++        self.learned_n = 0;
+     }
+ }
+ 
 diff --git a/crates/ui-egui/src/render.rs b/crates/ui-egui/src/render.rs
 index e8c3a90..8ada94b 100644
 --- a/crates/ui-egui/src/render.rs
@@ -17046,7 +17154,7 @@ index 0000000..7b13bf5
 +    }
 +}
 diff --git a/xtask/src/web.rs b/xtask/src/web.rs
-index c931917..2502613 100644
+index c931917..ffa65e9 100644
 --- a/xtask/src/web.rs
 +++ b/xtask/src/web.rs
 @@ -23,8 +23,19 @@ const SITE_DIR: &str = "web-site";
@@ -17071,7 +17179,31 @@ index c931917..2502613 100644
  
  /// Bundle files that get precompressed copies.
  const COMPRESSED: [&str; 4] = ["index.html", "worker.js", "lightcraft_web.js", "lightcraft_web_bg.wasm"];
-@@ -136,6 +147,9 @@ pub fn run(args: &[&str]) -> Result<(), String> {
+@@ -127,15 +138,31 @@ pub fn run(args: &[&str]) -> Result<(), String> {
+     let bg = out.join("lightcraft_web_bg.wasm");
+     if !dev && Command::new("wasm-opt").arg("--version").output().is_ok() {
+         let mut o = Command::new("wasm-opt");
+-        o.args(["-O2", "--enable-bulk-memory", "--enable-nontrapping-float-to-int", "--enable-sign-ext", "--enable-mutable-globals"])
++        // -O3: the editor's pixel loops run in this module (the browser build has no GPU
++        // pipeline). The features are those rustc emits for wasm32 (reference types and
++        // multi-value by default since Rust 1.82, SIMD when built with +simd128): one missing makes
++        // wasm-opt refuse the module, and the unoptimized one is kept.
++        o.args([
++            "-O3",
++            "--enable-bulk-memory",
++            "--enable-nontrapping-float-to-int",
++            "--enable-sign-ext",
++            "--enable-mutable-globals",
++            "--enable-reference-types",
++            "--enable-multivalue",
++            "--enable-simd",
++        ])
+             .arg(&bg)
+             .arg("-o")
+             .arg(&bg);
+-        if step(o, "wasm-opt -O2").is_err() {
++        if step(o, "wasm-opt -O3").is_err() {
+             eprintln!("(wasm-opt failed; keeping the unoptimized module)");
          }
      }
      for f in STATIC_FILES {
@@ -17081,7 +17213,7 @@ index c931917..2502613 100644
          std::fs::copy(root().join("apps/lightcraft-web").join(f), out.join(f)).map_err(|e| format!("copy {f}: {e}"))?;
      }
      let chinese_font = copy_chinese_font(&out)?;
-@@ -196,6 +210,7 @@ fn mime(path: &Path) -> &'static str {
+@@ -196,6 +223,7 @@ fn mime(path: &Path) -> &'static str {
          "otf" => "font/otf",
          "txt" => "text/plain; charset=utf-8",
          "svg" => "image/svg+xml",
