@@ -15925,10 +15925,10 @@ index 631e09f..8dbecd4 100644
  mod web;
 diff --git a/apps/lightcraft-web/src/mobile.rs b/apps/lightcraft-web/src/mobile.rs
 new file mode 100644
-index 0000000..5d952fa
+index 0000000..39eafd0
 --- /dev/null
 +++ b/apps/lightcraft-web/src/mobile.rs
-@@ -0,0 +1,647 @@
+@@ -0,0 +1,695 @@
 +//! Phones and tablets (iPhone, iPad, Android): the browser host's side of LightCraft's touch
 +//! support. The page (`index.html`) works out what the device is and keeps a little state the
 +//! browser only reports to its own event handlers; this module reads it each frame:
@@ -16238,6 +16238,10 @@ index 0000000..5d952fa
 +    held: Option<(egui::Event, f64)>,
 +    /// A multi-finger gesture: pointer presses and releases are dropped until every finger is up.
 +    gesture: bool,
++    /// The press of the finger touch in progress has been passed on: a second one is the same
++    /// touch again (Safari reports a finger as a pointer event and then as a touch event, and
++    /// eframe turns each into a press) or another finger, never a new press.
++    pressed: bool,
 +    pointer: Option<egui::Pos2>,
 +}
 +
@@ -16256,19 +16260,21 @@ index 0000000..5d952fa
 +    pub ids: Option<Vec<i32>>,
 +    /// The last pointer pressed was a mouse or trackpad (an iPad's, or a computer's).
 +    pub mouse: bool,
++    /// The last pointer pressed was a finger (`pointerType` "touch").
++    pub finger: bool,
 +    /// A Pencil (or other pen) is the touch in progress.
 +    pub stylus: bool,
 +}
 +
 +impl LiveTouches {
 +    fn read() -> LiveTouches {
-+        let Some(m) = global("lightcraftMobile") else { return LiveTouches { ids: None, mouse: false, stylus: false } };
++        let Some(m) = global("lightcraftMobile") else { return LiveTouches { ids: None, mouse: false, finger: false, stylus: false } };
 +        let ids = Reflect::get(&m, &JsValue::from_str("touchIds"))
 +            .ok()
 +            .filter(js_sys::Array::is_array)
 +            .map(|v| js_sys::Array::from(&v).iter().filter_map(|x| x.as_f64()).map(|x| x as i32).collect());
-+        let mouse = Reflect::get(&m, &JsValue::from_str("pointerType")).ok().and_then(|v| v.as_string()).is_some_and(|t| t == "mouse");
-+        LiveTouches { ids, mouse, stylus: flag(&m, "stylus") }
++        let kind = Reflect::get(&m, &JsValue::from_str("pointerType")).ok().and_then(|v| v.as_string()).unwrap_or_default();
++        LiveTouches { ids, mouse: kind == "mouse", finger: kind == "touch", stylus: flag(&m, "stylus") }
 +    }
 +}
 +
@@ -16334,12 +16340,15 @@ index 0000000..5d952fa
 +                g.pointer = Some(*p);
 +                out.push(e);
 +            }
-+            Event::PointerButton { pressed: true, .. } if finger_down && !stylus => {
++            // a finger's press: from the pointer event (eframe runs a frame for it at once, before
++            // the touch event arrives) or from the touch event
++            Event::PointerButton { pressed: true, .. } if (finger_down || live.finger) && !stylus => {
 +                if g.gesture || g.active.len() >= 2 {
 +                    g.gesture = true; // dropped: part of a gesture
-+                } else {
++                } else if g.held.is_none() && !g.pressed {
 +                    g.held = Some((e, now));
 +                }
++                // else: the same touch reported again, or another finger: dropped
 +            }
 +            Event::PointerButton { pressed: false, .. } if g.gesture || ended => {}
 +            Event::PointerButton { pressed: false, .. } => {
@@ -16347,6 +16356,7 @@ index 0000000..5d952fa
 +                if let Some((press, _)) = g.held.take() {
 +                    push_press(&mut out, press, g.pointer);
 +                }
++                g.pressed = false;
 +                out.push(e);
 +            }
 +            _ => out.push(e),
@@ -16355,6 +16365,7 @@ index 0000000..5d952fa
 +    if ended {
 +        g.gesture = false;
 +        g.held = None;
++        g.pressed = false;
 +        out.push(Event::PointerGone);
 +    }
 +    reconcile(g, &mut out, live, pointer_down);
@@ -16364,6 +16375,7 @@ index 0000000..5d952fa
 +        && let Some((press, _)) = g.held.take()
 +    {
 +        push_press(&mut out, press, g.pointer);
++        g.pressed = true;
 +    }
 +    raw.events = out;
 +    (action, g.held.is_some())
@@ -16397,9 +16409,10 @@ index 0000000..5d952fa
 +        return;
 +    }
 +    // no finger or pen on the screen: nothing of a touch is held any more
-+    if g.gesture || g.held.is_some() {
++    if g.gesture || g.held.is_some() || g.pressed {
 +        g.gesture = false;
 +        g.held = None;
++        g.pressed = false;
 +    }
 +    let released = out.iter().any(|e| matches!(e, Event::PointerButton { pressed: false, .. }));
 +    let pressed = out.iter().any(|e| matches!(e, Event::PointerButton { pressed: true, .. }));
@@ -16441,14 +16454,14 @@ index 0000000..5d952fa
 +    }
 +    fn frame(g: &mut Gestures, events: Vec<Event>, now: f64) -> (Vec<Event>, Option<TapAction>) {
 +        // (the page doesn't report its touches here: no reconciliation)
-+        let live = LiveTouches { ids: None, mouse: false, stylus: false };
++        let live = LiveTouches { ids: None, mouse: false, finger: false, stylus: false };
 +        let mut raw = RawInput { events, ..Default::default() };
 +        let (a, _) = filter_with(g, &mut raw, &live, false, now);
 +        (raw.events, a)
 +    }
 +
 +    fn frame_live(g: &mut Gestures, events: Vec<Event>, ids: &[i32], pointer_down: bool, now: f64) -> Vec<Event> {
-+        let live = LiveTouches { ids: Some(ids.to_vec()), mouse: false, stylus: false };
++        let live = LiveTouches { ids: Some(ids.to_vec()), mouse: false, finger: true, stylus: false };
 +        let mut raw = RawInput { events, ..Default::default() };
 +        filter_with(g, &mut raw, &live, pointer_down, now);
 +        raw.events
@@ -16552,10 +16565,45 @@ index 0000000..5d952fa
 +    #[test]
 +    fn a_mouse_held_down_is_never_released_for_it() {
 +        let mut g = Gestures::default();
-+        let live = LiveTouches { ids: Some(vec![]), mouse: true, stylus: false };
++        let live = LiveTouches { ids: Some(vec![]), mouse: true, finger: false, stylus: false };
 +        let mut raw = RawInput { events: vec![], ..Default::default() };
 +        filter_with(&mut g, &mut raw, &live, true, 0.0);
 +        assert_eq!(releases(&raw.events), 0);
++    }
++
++    /// Safari's order for one finger: pointerdown (eframe runs a frame at once), touchstart,
++    /// pointerup (another frame at once), touchend. One press and one click reach the app.
++    #[test]
++    fn safaris_pointer_then_touch_events_make_one_click() {
++        let mut g = Gestures::default();
++        let p = pos2(20.0, 20.0);
++        let a = frame_live(&mut g, vec![button(true, p)], &[], false, 0.0);
++        let b = frame_live(&mut g, vec![button(true, p), touch(1, TouchPhase::Start, p)], &[1], false, 2.0);
++        assert_eq!(presses(&a) + presses(&b), 0, "held, and the touch event's press is the same touch");
++        let c = frame_live(&mut g, vec![button(false, p)], &[1], false, 40.0);
++        assert_eq!((presses(&c), releases(&c)), (1, 1), "a click");
++        let d = frame_live(&mut g, vec![button(false, p), Event::PointerGone, touch(1, TouchPhase::End, p)], &[], false, 42.0);
++        assert_eq!(presses(&d), 0);
++    }
++
++    /// Two fingers in Safari's order: no press ever reaches the app, and the tap undoes.
++    #[test]
++    fn safaris_two_finger_tap_undoes_without_a_press() {
++        let mut g = Gestures::default();
++        let (p, q) = (pos2(20.0, 20.0), pos2(90.0, 20.0));
++        let mut all = Vec::new();
++        all.extend(frame_live(&mut g, vec![button(true, p)], &[], false, 0.0));
++        all.extend(frame_live(&mut g, vec![button(true, p), touch(1, TouchPhase::Start, p)], &[1], false, 2.0));
++        all.extend(frame_live(&mut g, vec![button(true, q)], &[1], false, 20.0));
++        all.extend(frame_live(&mut g, vec![button(true, q), touch(2, TouchPhase::Start, q)], &[1, 2], false, 22.0));
++        all.extend(frame_live(&mut g, vec![button(false, p)], &[1, 2], false, 100.0));
++        let live = LiveTouches { ids: Some(vec![]), mouse: false, finger: true, stylus: false };
++        let mut raw = RawInput { events: vec![button(false, q), touch(1, TouchPhase::End, p), touch(2, TouchPhase::End, q)], ..Default::default() };
++        let (act, _) = filter_with(&mut g, &mut raw, &live, false, 110.0);
++        all.extend(raw.events);
++        assert_eq!(presses(&all), 0);
++        assert_eq!(releases(&all), 0);
++        assert_eq!(act, Some(TapAction::Undo));
 +    }
 +
 +    #[test]
@@ -17308,6 +17356,46 @@ index e8c3a90..e10b52e 100644
          };
          #[cfg(not(target_arch = "wasm32"))]
          let inline_ms = 0.0;
+diff --git a/crates/ui-egui/src/state.rs b/crates/ui-egui/src/state.rs
+index 203ede5..e539da4 100644
+--- a/crates/ui-egui/src/state.rs
++++ b/crates/ui-egui/src/state.rs
+@@ -18,6 +18,9 @@ pub use view::{
+     ToolOverlay, ViewMode, Zoom,
+ };
+ 
++/// The range of [`UiState::touch_bar_scale`].
++pub const TOUCH_BAR_SCALE: (f32, f32) = (0.6, 1.6);
++
+ #[derive(Clone, Debug, Serialize, Deserialize)]
+ #[serde(default, rename_all = "camelCase")]
+ pub struct UiState {
+@@ -31,6 +34,9 @@ pub struct UiState {
+     /// The arrangement generation `docking` was saved in ([`crate::docking::DOCKING_VERSION`]);
+     /// settings files are read through [`crate::docking::drop_outdated`].
+     pub docking_version: u32,
++    /// Phones and tablets: the size of the floating touch bar's text and buttons (1 = normal;
++    /// its A− / A+ buttons change it, within [`TOUCH_BAR_SCALE`]).
++    pub touch_bar_scale: f32,
+     #[serde(default = "crate::i18n::default_language")]
+     pub language: crate::i18n::Locale,
+     /// The Build Previews run last announced (its identity, finished?).
+@@ -394,6 +400,7 @@ impl Default for UiState {
+             window: None,
+             docking: None,
+             docking_version: crate::docking::DOCKING_VERSION,
++            touch_bar_scale: 0.85,
+             language: crate::i18n::default_language(),
+             preview_build_seen: None,
+             unsaved_seen: false,
+@@ -615,6 +622,7 @@ impl UiState {
+         self.import_thumb_size = crate::import::thumb_size(self.import_thumb_size);
+         self.left_width = LEFT_WIDTH.clamp(self.left_width);
+         self.right_width = RIGHT_WIDTH.clamp(self.right_width);
++        self.touch_bar_scale = if self.touch_bar_scale.is_finite() { self.touch_bar_scale.clamp(TOUCH_BAR_SCALE.0, TOUCH_BAR_SCALE.1) } else { 0.85 };
+         self.brush_size = self.brush_size.clamp(0.002, 0.5);
+         self.sidebar.adopt_collapsed(&std::mem::take(&mut self.collapsed_sidebar));
+         self.dialog = None;
 diff --git a/crates/ui-egui/src/theme.rs b/crates/ui-egui/src/theme.rs
 index de2be96..41ece38 100644
 --- a/crates/ui-egui/src/theme.rs
@@ -17378,10 +17466,10 @@ index de2be96..41ece38 100644
  
 diff --git a/crates/ui-egui/src/touch_bar.rs b/crates/ui-egui/src/touch_bar.rs
 new file mode 100644
-index 0000000..db847e3
+index 0000000..ab2ae77
 --- /dev/null
 +++ b/crates/ui-egui/src/touch_bar.rs
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,234 @@
 +//! The touch bar: a small floating bar for phones and tablets ([`crate::theme::touch_mode`]).
 +//!
 +//! On a desktop much of LightCraft is a key away (G, D, Escape, \, Cmd+Z…). A finger has no
@@ -17465,61 +17553,40 @@ index 0000000..db847e3
 +        return;
 +    }
 +    let screen = ctx.content_rect();
-+    let open = is_open(ctx);
-+    // start at the bottom right, above the bottom bar and clear of the home indicator
-+    let start = Pos2::new(screen.right() - HANDLE - 16.0, screen.bottom() - HANDLE - 56.0);
-+    let area = egui::Area::new(Id::unique("lightcraft-touch-bar"))
-+        .order(Order::Foreground)
-+        .default_pos(start)
-+        .movable(true)
-+        .constrain(true)
-+        .pivot(Align2::LEFT_TOP);
 +    let mut run: Option<&'static str> = None;
-+    let mut toggle_open = false;
-+    area.show(ctx, |ui| {
-+        let t = ui.visuals().clone();
-+        egui::Frame::new()
-+            .fill(t.window_fill.gamma_multiply(0.96))
-+            .stroke(Stroke::new(1.0, t.window_stroke.color))
-+            .corner_radius(CornerRadius::same(if open { 12 } else { 22 }))
-+            .shadow(t.popup_shadow)
-+            .inner_margin(if open { 8 } else { 0 })
-+            .show(ui, |ui| {
-+                if open {
-+                    ui.spacing_mut().button_padding = vec2(12.0, 8.0);
-+                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-+                    ui.horizontal(|ui| {
-+                        ui.label(egui::RichText::new("LightCraft").strong());
-+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-+                            if ui.add(egui::Button::new(egui::RichText::new("×").size(20.0)).min_size(vec2(36.0, 36.0))).clicked() {
-+                                toggle_open = true;
-+                            }
-+                        });
-+                    });
-+                    for row in ROWS {
-+                        ui.horizontal_wrapped(|ui| {
-+                            for button in row {
-+                                let on = button.toggle && crate::menubar::checked(app, button.id) == Some(true);
-+                                let enabled = button.id == GESTURE_SETTINGS || crate::menus::ui_enabled(app, button.id);
-+                                let label = egui::RichText::new(tr(button.label)).size(15.0);
-+                                let w = egui::Button::selectable(on, label).min_size(vec2(44.0, 40.0));
-+                                if ui.add_enabled(enabled, w).clicked() {
-+                                    run = Some(button.id);
-+                                }
-+                            }
-+                        });
-+                    }
-+                } else {
++    if is_open(ctx) {
++        let mut still_open = true;
++        run = bar_window(app, ctx, screen, &mut still_open);
++        if !still_open {
++            ctx.data_mut(|d| d.insert_temp(open_id(), false));
++        }
++    } else {
++        // folded: one round handle, at the bottom right above the bottom bar and clear of the
++        // home indicator; a drag moves it, a tap opens the bar
++        let start = Pos2::new(screen.right() - HANDLE - 16.0, screen.bottom() - HANDLE - 56.0);
++        let area = egui::Area::new(Id::unique("lightcraft-touch-bar"))
++            .order(Order::Foreground)
++            .default_pos(start)
++            .movable(true)
++            .constrain(true)
++            .pivot(Align2::LEFT_TOP);
++        let mut open_it = false;
++        area.show(ctx, |ui| {
++            let t = ui.visuals().clone();
++            egui::Frame::new()
++                .fill(t.window_fill.gamma_multiply(0.96))
++                .stroke(Stroke::new(1.0, t.window_stroke.color))
++                .corner_radius(CornerRadius::same(22))
++                .shadow(t.popup_shadow)
++                .show(ui, |ui| {
 +                    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(HANDLE), egui::Sense::click());
 +                    paint_handle(ui, rect, resp.hovered() || resp.is_pointer_button_down_on());
-+                    if resp.clicked() {
-+                        toggle_open = true;
-+                    }
-+                }
-+            });
-+    });
-+    if toggle_open {
-+        ctx.data_mut(|d| d.insert_temp(open_id(), !open));
++                    open_it = resp.clicked();
++                });
++        });
++        if open_it {
++            ctx.data_mut(|d| d.insert_temp(open_id(), true));
++        }
 +    }
 +    if run == Some(GESTURE_SETTINGS) {
 +        ctx.data_mut(|d| d.insert_temp(gesture_settings_id(), true));
@@ -17530,6 +17597,68 @@ index 0000000..db847e3
 +        }
 +        ctx.request_repaint();
 +    }
++}
++
++/// The open bar: a window like any other. Its title bar moves it, its corner resizes it (the
++/// buttons flow into as many rows as its width needs, and it scrolls when it is shorter than
++/// they are), the arrow collapses it to its title and the × folds it back to the round handle.
++/// A− and A+ change the size of its text and buttons ([`crate::state::UiState::touch_bar_scale`],
++/// kept between sessions). Returns the command of the button tapped.
++fn bar_window(app: &mut LightcraftApp, ctx: &egui::Context, screen: egui::Rect, open: &mut bool) -> Option<&'static str> {
++    let scale = app.ui.touch_bar_scale.clamp(crate::state::TOUCH_BAR_SCALE.0, crate::state::TOUCH_BAR_SCALE.1);
++    let width = (330.0 * scale).min(screen.width() * 0.9);
++    let start = Pos2::new((screen.right() - width - 16.0).max(screen.left()), (screen.bottom() - 340.0 * scale - 60.0).max(screen.top() + 40.0));
++    let mut run = None;
++    let mut new_scale = scale;
++    egui::Window::new(tr("LightCraft"))
++        .id(Id::unique("lightcraft-touch-bar-window"))
++        .order(Order::Foreground)
++        .open(open)
++        .collapsible(true)
++        .resizable(true)
++        .constrain(true)
++        .default_pos(start)
++        .default_width(width)
++        .min_width(140.0)
++        .max_width(screen.width() * 0.95)
++        .max_height(screen.height() * 0.85)
++        .scroll([false, true])
++        .show(ctx, |ui| {
++            let text = 14.0 * scale;
++            ui.spacing_mut().button_padding = vec2(9.0 * scale, 5.0 * scale);
++            ui.spacing_mut().item_spacing = vec2(5.0 * scale, 5.0 * scale);
++            // text size: smaller / larger, with the size now
++            ui.horizontal(|ui| {
++                let step = |ui: &mut egui::Ui, label: &str| ui.add(egui::Button::new(egui::RichText::new(label).size(text)).min_size(vec2(36.0, 30.0))).clicked();
++                if step(ui, "A−") {
++                    new_scale = (scale - 0.1).max(crate::state::TOUCH_BAR_SCALE.0);
++                }
++                ui.label(egui::RichText::new(format!("{:.0} %", scale * 100.0)).size(text * 0.85).weak());
++                if step(ui, "A+") {
++                    new_scale = (scale + 0.1).min(crate::state::TOUCH_BAR_SCALE.1);
++                }
++            });
++            ui.separator();
++            for row in ROWS {
++                ui.horizontal_wrapped(|ui| {
++                    for button in row {
++                        let on = button.toggle && crate::menubar::checked(app, button.id) == Some(true);
++                        let enabled = button.id == GESTURE_SETTINGS || crate::menus::ui_enabled(app, button.id);
++                        let label = egui::RichText::new(tr(button.label)).size(text);
++                        let w = egui::Button::selectable(on, label).min_size(vec2(32.0 * scale, 30.0 * scale));
++                        if ui.add_enabled(enabled, w).clicked() {
++                            run = Some(button.id);
++                        }
++                    }
++                });
++                ui.add_space(2.0 * scale);
++            }
++        });
++    if (new_scale - scale).abs() > f32::EPSILON {
++        app.ui.touch_bar_scale = (new_scale * 10.0).round() / 10.0;
++        ctx.request_repaint();
++    }
++    run
 +}
 +
 +/// Fit a desktop layout to a small screen (`width` points across): below a tablet's width the
