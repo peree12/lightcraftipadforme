@@ -15371,10 +15371,10 @@ literal 0
 HcmV?d00001
 
 diff --git a/apps/lightcraft-web/index.html b/apps/lightcraft-web/index.html
-index b088ad1..82e8881 100644
+index b088ad1..2c26696 100644
 --- a/apps/lightcraft-web/index.html
 +++ b/apps/lightcraft-web/index.html
-@@ -2,25 +2,323 @@
+@@ -2,27 +2,470 @@
  <html lang="en">
  <head>
    <meta charset="utf-8">
@@ -15431,7 +15431,31 @@ index b088ad1..82e8881 100644
 +      background: #000a; font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #e8e8e8;
 +      -webkit-user-select: text; user-select: text;
 +    }
-+    #lightcraft_notice[hidden] { display: none; }
++    #lightcraft_notice[hidden], #lightcraft_gestures[hidden] { display: none; }
++    #lightcraft_gestures {
++      position: fixed; inset: 0; z-index: 25; display: flex; align-items: center; justify-content: center;
++      padding: calc(20px + env(safe-area-inset-top, 0px)) 20px calc(20px + env(safe-area-inset-bottom, 0px));
++      background: #000a; font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #e8e8e8;
++    }
++    #lightcraft_gestures .card {
++      width: min(34em, 100%); max-height: 100%; overflow: auto; background: #262626; border: 1px solid #3a3a3a;
++      border-radius: 18px; padding: 22px 24px; box-shadow: 0 12px 40px #000c;
++    }
++    #lightcraft_gestures h1 { font-size: 20px; margin: 0 0 14px; }
++    #lightcraft_gestures .row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 0; border-top: 1px solid #333; }
++    #lightcraft_gestures .row small { display: block; color: #9a9a9a; font-size: 13px; }
++    #lightcraft_gestures select {
++      font: 16px system-ui, -apple-system, sans-serif; color: #e8e8e8; background: #333; border: 1px solid #4a4a4a;
++      border-radius: 10px; padding: 8px 10px; min-height: 44px; max-width: 55%;
++    }
++    #lightcraft_gestures .dim { color: #9a9a9a; font-size: 14px; margin: 14px 0 0; }
++    #lightcraft_gestures .ok { color: #8fd18f; }
++    #lightcraft_gestures .buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
++    #lightcraft_gestures button {
++      font: 600 16px system-ui, -apple-system, sans-serif; padding: 11px 22px; border-radius: 12px; border: 0;
++      background: #f2a516; color: #1c1c1c; min-height: 44px;
++    }
++    #lightcraft_gestures button.alt { background: #3a3a3a; color: #e8e8e8; }
 +    #lightcraft_notice .card {
 +      max-width: 30em; background: #262626; border: 1px solid #3a3a3a; border-radius: 18px;
 +      padding: 24px 26px; box-shadow: 0 12px 40px #000c; text-align: center;
@@ -15456,6 +15480,18 @@ index b088ad1..82e8881 100644
 +    <small id="lightcraft_loading_hint"></small>
 +  </div>
    <div id="lightcraft_status" aria-live="polite"></div>
++  <!-- Apple Pencil & gestures: which action each gesture runs (saved in this browser). -->
++  <div id="lightcraft_gestures" role="dialog" aria-modal="true" aria-labelledby="lightcraft_gestures_title" hidden>
++    <div class="card">
++      <h1 id="lightcraft_gestures_title"></h1>
++      <div id="lightcraft_gestures_rows"></div>
++      <p id="lightcraft_gestures_pencil" class="dim"></p>
++      <div class="buttons">
++        <button id="lightcraft_gestures_reset" type="button" class="alt"></button>
++        <button id="lightcraft_gestures_done" type="button"></button>
++      </div>
++    </div>
++  </div>
 +  <!-- Shown at every start: this build is a personal port, not the official app. -->
 +  <div id="lightcraft_notice" role="dialog" aria-modal="true" aria-labelledby="lightcraft_notice_title">
 +    <div class="card">
@@ -15502,6 +15538,23 @@ index b088ad1..82e8881 100644
 +      addEventListener("touchstart", notePen, { capture: true, passive: true });
 +      addEventListener("touchmove", notePen, { capture: true, passive: true });
 +      addEventListener("touchend", (e) => { if (e.touches.length === 0) m.stylus = false; }, { capture: true, passive: true });
++
++      // The fingers and pens really on the screen, from every touch event (wherever it ends).
++      // The canvas only hears a touch end inside it, and a cancelled touch (palm rejection, a
++      // system gesture) ends with no release: the app compares its touches with this list each
++      // frame and closes the ones that are gone, so nothing stays "pressed" (mobile.rs).
++      m.touchIds = [];
++      m.pointerType = "";
++      const noteTouches = (e) => { m.touchIds = Array.from(e.touches, (t) => t.identifier); };
++      for (const type of ["touchstart", "touchmove", "touchend", "touchcancel"]) {
++        addEventListener(type, noteTouches, { capture: true, passive: true });
++      }
++      addEventListener("touchcancel", (e) => { if (e.touches.length === 0) m.stylus = false; }, { capture: true, passive: true });
++      // mouse or trackpad (an iPad's too): its held button is never released for it
++      addEventListener("pointerdown", (e) => { m.pointerType = e.pointerType || ""; }, { capture: true, passive: true });
++      // leaving the app (home screen, app switcher) ends every touch without telling the page
++      document.addEventListener("visibilitychange", () => { if (document.visibilityState !== "visible") { m.touchIds = []; m.stylus = false; } });
++      addEventListener("blur", () => { m.touchIds = []; m.stylus = false; });
 +
 +      // Safari's own pinch-zoom of the page (the app pinches the photo itself)
 +      for (const type of ["gesturestart", "gesturechange", "gestureend"]) {
@@ -15674,6 +15727,98 @@ index b088ad1..82e8881 100644
 +      }
 +    })();
 +
++    // ---- Apple Pencil & gestures ------------------------------------------------------------
++    // iPadOS gives Apple Pencil's double-tap and squeeze only to native apps; the LightCraft Pencil
++    // companion app (a native shell around this page) passes them in with `lightcraftPencil(kind)`.
++    // Each gesture runs the action chosen here (mobile.rs maps the names to commands).
++    (() => {
++      const m = globalThis.lightcraftMobile || (globalThis.lightcraftMobile = {});
++      const es = (navigator.language || "").toLowerCase().startsWith("es");
++      const T = es ? {
++        title: "Apple Pencil y gestos", done: "Listo", reset: "Restablecer",
++        pencilDoubleTap: ["Apple Pencil: doble toque", "Apple Pencil 2 y Pro"],
++        pencilSqueeze: ["Apple Pencil: apretar", "Apple Pencil Pro"],
++        twoFingerTap: ["Toque con dos dedos", "En la foto o cualquier parte"],
++        threeFingerTap: ["Toque con tres dedos", "En la foto o cualquier parte"],
++        none: "Nada", undo: "Deshacer", redo: "Rehacer", original: "Ver original (antes/después)", back: "Atrás / volver a la cuadrícula",
++        next: "Foto siguiente", previous: "Foto anterior", zoom: "Acercar / alejar", fit: "Encajar en pantalla", tools: "Mostrar u ocultar herramientas", filmstrip: "Mostrar u ocultar tira de fotos",
++        native: "✓ Apple Pencil conectado a través de la app LightCraft Pencil.",
++        web: "El doble toque y el apretón del Apple Pencil necesitan la app LightCraft Pencil: Safari no se los entrega a las páginas web. Los toques con dedos funcionan aquí.",
++      } : {
++        title: "Apple Pencil & Gestures", done: "Done", reset: "Reset",
++        pencilDoubleTap: ["Apple Pencil: double-tap", "Apple Pencil 2 and Pro"],
++        pencilSqueeze: ["Apple Pencil: squeeze", "Apple Pencil Pro"],
++        twoFingerTap: ["Two-finger tap", "On the photo or anywhere"],
++        threeFingerTap: ["Three-finger tap", "On the photo or anywhere"],
++        none: "Nothing", undo: "Undo", redo: "Redo", original: "Show original (before/after)", back: "Back / to the grid",
++        next: "Next photo", previous: "Previous photo", zoom: "Zoom in / out", fit: "Fit to screen", tools: "Show or hide tools", filmstrip: "Show or hide filmstrip",
++        native: "✓ Apple Pencil connected through the LightCraft Pencil app.",
++        web: "Apple Pencil double-tap and squeeze need the LightCraft Pencil app: Safari doesn't pass them to web pages. Finger taps work here.",
++      };
++      const defaults = { pencilDoubleTap: "undo", pencilSqueeze: "original", twoFingerTap: "undo", threeFingerTap: "redo" };
++      const actions = ["none", "undo", "redo", "original", "back", "next", "previous", "zoom", "fit", "tools", "filmstrip"];
++      let saved = {};
++      try { saved = JSON.parse(localStorage.getItem("lightcraftGestures") || "{}") || {}; } catch (_) {}
++      m.gestures = Object.assign({}, defaults, saved);
++      const save = () => { try { localStorage.setItem("lightcraftGestures", JSON.stringify(m.gestures)); } catch (_) {} };
++
++      // the companion app calls this with "doubleTap" or "squeeze"
++      globalThis.lightcraftPencil = (kind) => {
++        const g = kind === "squeeze" ? "pencilSqueeze" : "pencilDoubleTap";
++        if (globalThis.lightcraftGesture) globalThis.lightcraftGesture(g);
++        return true;
++      };
++
++      const box = document.getElementById("lightcraft_gestures");
++      const rows = document.getElementById("lightcraft_gestures_rows");
++      if (!box || !rows) return;
++      document.getElementById("lightcraft_gestures_title").textContent = T.title;
++      document.getElementById("lightcraft_gestures_done").textContent = T.done;
++      document.getElementById("lightcraft_gestures_reset").textContent = T.reset;
++      const build = () => {
++        rows.innerHTML = "";
++        for (const g of Object.keys(defaults)) {
++          const row = document.createElement("label");
++          row.className = "row";
++          const name = document.createElement("span");
++          name.textContent = T[g][0];
++          const sub = document.createElement("small");
++          sub.textContent = T[g][1];
++          name.appendChild(sub);
++          const sel = document.createElement("select");
++          for (const a of actions) {
++            const o = document.createElement("option");
++            o.value = a;
++            o.textContent = T[a];
++            sel.appendChild(o);
++          }
++          sel.value = m.gestures[g] || defaults[g];
++          sel.addEventListener("change", () => { m.gestures[g] = sel.value; save(); });
++          row.append(name, sel);
++          rows.appendChild(row);
++        }
++        const p = document.getElementById("lightcraft_gestures_pencil");
++        const native = !!globalThis.lightcraftNative;
++        p.textContent = native ? T.native : T.web;
++        p.className = native ? "dim ok" : "dim";
++      };
++      const close = () => {
++        box.hidden = true;
++        const c = document.getElementById("lightcraft_canvas");
++        if (c) c.focus({ preventScroll: true });
++      };
++      m.openGestureSettings = () => { build(); box.hidden = false; };
++      document.getElementById("lightcraft_gestures_done").addEventListener("click", close);
++      document.getElementById("lightcraft_gestures_reset").addEventListener("click", () => { m.gestures = Object.assign({}, defaults); save(); build(); });
++      // touches and keys on the settings stay on them (the app behind doesn't get them)
++      for (const t of ["touchstart", "touchend", "pointerdown", "pointerup"]) box.addEventListener(t, (e) => e.stopPropagation());
++      document.addEventListener("keydown", (e) => {
++        if (box.hidden) return;
++        e.stopImmediatePropagation();
++        if (e.key === "Escape") { e.preventDefault(); close(); }
++      }, { capture: true });
++    })();
++
 +    // ---- Unofficial-port notice: dismissed with Continue (or Return/Escape on a keyboard) ----
 +    (() => {
 +      const box = document.getElementById("lightcraft_notice");
@@ -15702,9 +15847,12 @@ index b088ad1..82e8881 100644
 +    }
 +  </script>
    <script type="module">
-     import init, { start, command } from "./lightcraft_web.js";
+-    import init, { start, command } from "./lightcraft_web.js";
++    import init, { start, command, gesture } from "./lightcraft_web.js";
      (async () => {
-@@ -30,18 +328,25 @@
+       // The Chinese font is a separate file: embedding it would exceed the host's WASM size limit.
+       // Font-free development builds can still run, with the same missing-glyph warning as before.
+@@ -30,18 +473,27 @@
          .then(async response => response.ok ? new Uint8Array(await response.arrayBuffer()) : new Uint8Array())
          .catch(() => new Uint8Array());
        // Compile once; the render workers (worker.js) instantiate the same compiled module.
@@ -15722,6 +15870,8 @@ index b088ad1..82e8881 100644
        await init({ module_or_path: module });
        // automation: `await lightcraft.command("library.info", "{}")` → JSON text
        globalThis.lightcraft = { command };
++      // Apple Pencil gestures from the companion app (lightcraftPencil → the app's settings)
++      globalThis.lightcraftGesture = gesture;
        start(font);
 +      globalThis.lightcraftMobile.started = true;
 +      // a good start: forget earlier recoveries after a minute of running
@@ -15775,10 +15925,10 @@ index 631e09f..8dbecd4 100644
  mod web;
 diff --git a/apps/lightcraft-web/src/mobile.rs b/apps/lightcraft-web/src/mobile.rs
 new file mode 100644
-index 0000000..2dc54d8
+index 0000000..5d952fa
 --- /dev/null
 +++ b/apps/lightcraft-web/src/mobile.rs
-@@ -0,0 +1,439 @@
+@@ -0,0 +1,647 @@
 +//! Phones and tablets (iPhone, iPad, Android): the browser host's side of LightCraft's touch
 +//! support. The page (`index.html`) works out what the device is and keeps a little state the
 +//! browser only reports to its own event handlers; this module reads it each frame:
@@ -15979,8 +16129,8 @@ index 0000000..2dc54d8
 +
 +// ------------------------------------------------------------------ multi-finger taps
 +
-+/// What a multi-finger tap asks for (as in drawing apps on iPad): two fingers undo, three redo.
-+/// Apple Pencil's own double-tap and squeeze go to iPadOS only; a web page never sees them.
++/// A multi-finger tap: two fingers or three. What it does is the person's choice
++/// ([`gesture_action`]; by default two fingers undo and three redo, as in drawing apps on iPad).
 +#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 +pub(crate) enum TapAction {
 +    Undo,
@@ -15988,12 +16138,85 @@ index 0000000..2dc54d8
 +}
 +
 +impl TapAction {
-+    pub fn command(self) -> &'static str {
++    /// The gesture's name in the person's settings ([`GESTURE_DEFAULTS`]).
++    pub fn gesture(self) -> &'static str {
 +        match self {
-+            TapAction::Undo => "edit.undo",
-+            TapAction::Redo => "edit.redo",
++            TapAction::Undo => "twoFingerTap",
++            TapAction::Redo => "threeFingerTap",
 +        }
 +    }
++}
++
++// ------------------------------------------------------------------ gesture settings
++
++/// The gestures the person can give an action to, with their default action. Apple Pencil's
++/// double-tap and squeeze reach a page only through the LightCraft Pencil companion app (iPadOS
++/// gives them to native apps only; it calls `lightcraftPencil(...)` in the page).
++pub(crate) const GESTURE_DEFAULTS: [(&str, &str); 4] =
++    [("pencilDoubleTap", "undo"), ("pencilSqueeze", "original"), ("twoFingerTap", "undo"), ("threeFingerTap", "redo")];
++
++/// What an action does: a command (the same as its menu item), a key (as if typed) or nothing.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum GestureAct {
++    Command(&'static str),
++    Key(egui::Key),
++    Nothing,
++}
++
++/// An action by its name in the settings, with the label its notice shows (English, translated).
++pub(crate) fn action(name: &str) -> (GestureAct, &'static str) {
++    match name {
++        "undo" => (GestureAct::Command("edit.undo"), "Undo"),
++        "redo" => (GestureAct::Command("edit.redo"), "Redo"),
++        "original" => (GestureAct::Command("view.showOriginal"), "Show Original"),
++        "back" => (GestureAct::Command("view.back"), "Back"),
++        "next" => (GestureAct::Key(egui::Key::ArrowRight), "Next Photo"),
++        "previous" => (GestureAct::Key(egui::Key::ArrowLeft), "Previous Photo"),
++        "zoom" => (GestureAct::Command("view.zoomToggle"), "Toggle Zoom"),
++        "fit" => (GestureAct::Command("view.zoomFit"), "Zoom to Fit"),
++        "tools" => (GestureAct::Command("view.rightPanel"), "Tools"),
++        "filmstrip" => (GestureAct::Command("view.filmstrip"), "Filmstrip"),
++        _ => (GestureAct::Nothing, ""),
++    }
++}
++
++/// The action the person chose for `gesture` (`lightcraftMobile.gestures`, kept by the page in
++/// the browser's storage), else its default.
++pub(crate) fn gesture_action(gesture: &str) -> String {
++    let chosen = global("lightcraftMobile")
++        .and_then(|m| Reflect::get(&m, &JsValue::from_str("gestures")).ok())
++        .filter(|g| g.is_object())
++        .and_then(|g| Reflect::get(&g, &JsValue::from_str(gesture)).ok())
++        .and_then(|v| v.as_string());
++    chosen.unwrap_or_else(|| GESTURE_DEFAULTS.iter().find(|(g, _)| *g == gesture).map_or("none", |(_, a)| a).to_string())
++}
++
++/// Show the page's gesture settings (`lightcraftMobile.openGestureSettings()`).
++pub(crate) fn open_gesture_settings() {
++    if let Some(m) = global("lightcraftMobile") {
++        let _ = call(&m, "openGestureSettings", &[]);
++    }
++}
++
++thread_local! {
++    /// Gestures the page reported (Apple Pencil, through the companion app), not run yet.
++    static INBOX: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
++}
++
++/// Queue a gesture reported by the page (`lightcraft_gesture` in `web.rs`).
++pub(crate) fn push_gesture(name: String) {
++    INBOX.with(|q| q.borrow_mut().push(name));
++}
++
++/// The gestures queued since the last frame.
++pub(crate) fn take_gestures() -> Vec<String> {
++    INBOX.with(|q| std::mem::take(&mut *q.borrow_mut()))
++}
++
++/// A key typed by an action: pressed and released.
++pub(crate) fn key_events(key: egui::Key) -> [egui::Event; 2] {
++    let ev = |pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::default() };
++    [ev(true), ev(false)]
 +}
 +
 +/// A finger's press is held back this long: a second finger landing in that time makes the
@@ -16026,15 +16249,40 @@ index 0000000..2dc54d8
 +    js_sys::Date::now()
 +}
 +
++/// What the page knows about the fingers and pens on the screen right now
++/// (`lightcraftMobile.touchIds`, kept by `index.html` from every touch event the browser sends).
++pub(crate) struct LiveTouches {
++    /// The ids of the touches on the screen now (`Touch.identifier`); `None`: the page doesn't say.
++    pub ids: Option<Vec<i32>>,
++    /// The last pointer pressed was a mouse or trackpad (an iPad's, or a computer's).
++    pub mouse: bool,
++    /// A Pencil (or other pen) is the touch in progress.
++    pub stylus: bool,
++}
++
++impl LiveTouches {
++    fn read() -> LiveTouches {
++        let Some(m) = global("lightcraftMobile") else { return LiveTouches { ids: None, mouse: false, stylus: false } };
++        let ids = Reflect::get(&m, &JsValue::from_str("touchIds"))
++            .ok()
++            .filter(js_sys::Array::is_array)
++            .map(|v| js_sys::Array::from(&v).iter().filter_map(|x| x.as_f64()).map(|x| x as i32).collect());
++        let mouse = Reflect::get(&m, &JsValue::from_str("pointerType")).ok().and_then(|v| v.as_string()).is_some_and(|t| t == "mouse");
++        LiveTouches { ids, mouse, stylus: flag(&m, "stylus") }
++    }
++}
++
 +/// Filter this frame's input for multi-finger gestures (before the app sees it). Returns the tap
 +/// action, if a two- or three-finger tap just ended, and whether a held press needs another frame
 +/// soon (the caller requests one). Mouse, trackpad and Apple Pencil input passes untouched.
-+pub(crate) fn filter_gestures(raw: &mut egui::RawInput) -> (Option<TapAction>, bool) {
-+    let stylus = global("lightcraftMobile").is_some_and(|m| flag(&m, "stylus"));
-+    GESTURES.with(|g| filter_with(&mut g.borrow_mut(), raw, stylus, now_ms()))
++/// `pointer_down`: egui holds a button down (from the frames before).
++pub(crate) fn filter_gestures(raw: &mut egui::RawInput, pointer_down: bool) -> (Option<TapAction>, bool) {
++    let live = LiveTouches::read();
++    GESTURES.with(|g| filter_with(&mut g.borrow_mut(), raw, &live, pointer_down, now_ms()))
 +}
 +
-+fn filter_with(g: &mut Gestures, raw: &mut egui::RawInput, stylus: bool, now: f64) -> (Option<TapAction>, bool) {
++fn filter_with(g: &mut Gestures, raw: &mut egui::RawInput, live: &LiveTouches, pointer_down: bool, now: f64) -> (Option<TapAction>, bool) {
++    let stylus = live.stylus;
 +    use egui::{Event, TouchPhase};
 +    // eframe sends a finger's press together with its touch start, in the same frame
 +    let finger_down = raw.events.iter().any(|e| matches!(e, Event::Touch { phase: TouchPhase::Start, .. }));
@@ -16109,6 +16357,7 @@ index 0000000..2dc54d8
 +        g.held = None;
 +        out.push(Event::PointerGone);
 +    }
++    reconcile(g, &mut out, live, pointer_down);
 +    // held long enough with one finger: it's a touch on whatever is under it
 +    if let Some((_, t)) = &g.held
 +        && now - *t >= HOLD_MS
@@ -16118,6 +16367,47 @@ index 0000000..2dc54d8
 +    }
 +    raw.events = out;
 +    (action, g.held.is_some())
++}
++
++/// Close the touches the browser never said were over. eframe passes a touch's end only when the
++/// finger lifts inside the canvas (not in the margins around it, by the notch or the home bar),
++/// and turns a cancelled touch (iOS cancels touches all the time: palm rejection with Apple
++/// Pencil, system gestures, an alert) into no release at all. egui then holds the button down
++/// for good: the slider that was dragged never ends its drag, nothing else can be tapped, and
++/// the app waits for a finger that is gone. The page knows the touches that are really down;
++/// any other touch is cancelled here, and a button held by a touch is released once no finger
++/// or pen is on the screen.
++fn reconcile(g: &mut Gestures, out: &mut Vec<egui::Event>, live: &LiveTouches, pointer_down: bool) {
++    use egui::{Event, TouchPhase};
++    let Some(ids) = &live.ids else { return };
++    let on_screen: std::collections::HashSet<u64> = ids.iter().map(|&i| egui::TouchId::from(i).0).collect();
++    let stale: Vec<u64> = g.active.keys().filter(|id| !on_screen.contains(id)).copied().collect();
++    for id in stale {
++        if let Some((_, last)) = g.active.remove(&id) {
++            out.push(Event::Touch {
++                device_id: egui::TouchDeviceId(0),
++                id: egui::TouchId(id),
++                phase: TouchPhase::Cancel,
++                pos: last,
++                force: None,
++            });
++        }
++    }
++    if !on_screen.is_empty() || live.mouse {
++        return;
++    }
++    // no finger or pen on the screen: nothing of a touch is held any more
++    if g.gesture || g.held.is_some() {
++        g.gesture = false;
++        g.held = None;
++    }
++    let released = out.iter().any(|e| matches!(e, Event::PointerButton { pressed: false, .. }));
++    let pressed = out.iter().any(|e| matches!(e, Event::PointerButton { pressed: true, .. }));
++    if pointer_down && !released && !pressed {
++        let pos = g.pointer.unwrap_or(egui::Pos2::ZERO);
++        out.push(Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::default() });
++        out.push(Event::PointerGone);
++    }
 +}
 +
 +/// Pass on a held press: at the place the finger landed, then to where it is now, so a slider or
@@ -16150,9 +16440,21 @@ index 0000000..2dc54d8
 +        Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() }
 +    }
 +    fn frame(g: &mut Gestures, events: Vec<Event>, now: f64) -> (Vec<Event>, Option<TapAction>) {
++        // (the page doesn't report its touches here: no reconciliation)
++        let live = LiveTouches { ids: None, mouse: false, stylus: false };
 +        let mut raw = RawInput { events, ..Default::default() };
-+        let (a, _) = filter_with(g, &mut raw, false, now);
++        let (a, _) = filter_with(g, &mut raw, &live, false, now);
 +        (raw.events, a)
++    }
++
++    fn frame_live(g: &mut Gestures, events: Vec<Event>, ids: &[i32], pointer_down: bool, now: f64) -> Vec<Event> {
++        let live = LiveTouches { ids: Some(ids.to_vec()), mouse: false, stylus: false };
++        let mut raw = RawInput { events, ..Default::default() };
++        filter_with(g, &mut raw, &live, pointer_down, now);
++        raw.events
++    }
++    fn releases(ev: &[Event]) -> usize {
++        ev.iter().filter(|e| matches!(e, Event::PointerButton { pressed: false, .. })).count()
 +    }
 +    fn presses(ev: &[Event]) -> usize {
 +        ev.iter().filter(|e| matches!(e, Event::PointerButton { pressed: true, .. })).count()
@@ -16211,6 +16513,62 @@ index 0000000..2dc54d8
 +    }
 +
 +    #[test]
++    fn a_finger_lifted_outside_the_canvas_is_released() {
++        // a slider drag whose finger lifted by the home bar: eframe sent no end and no release
++        let mut g = Gestures::default();
++        let p = pos2(10.0, 10.0);
++        frame_live(&mut g, vec![button(true, p), touch(7, TouchPhase::Start, p)], &[7], false, 0.0);
++        frame_live(&mut g, vec![], &[7], true, HOLD_MS + 1.0);
++        frame_live(&mut g, vec![Event::PointerMoved(pos2(10.0, 500.0)), touch(7, TouchPhase::Move, pos2(10.0, 500.0))], &[7], true, 120.0);
++        let ev = frame_live(&mut g, vec![], &[], true, 200.0);
++        assert_eq!(releases(&ev), 1, "the button is released");
++        assert!(ev.iter().any(|e| matches!(e, Event::Touch { phase: TouchPhase::Cancel, .. })), "the touch is closed");
++        assert!(g.active.is_empty());
++        // and the next tap works again
++        let q = pos2(50.0, 50.0);
++        frame_live(&mut g, vec![button(true, q), touch(8, TouchPhase::Start, q)], &[8], false, 1000.0);
++        let ev = frame_live(&mut g, vec![button(false, q), touch(8, TouchPhase::End, q)], &[], false, 1030.0);
++        assert_eq!(presses(&ev), 1);
++        assert_eq!(releases(&ev), 1);
++    }
++
++    #[test]
++    fn a_cancelled_touch_doesnt_leave_a_gesture_behind() {
++        // iOS cancels a palm while the Pencil draws: the second "finger" never ends
++        let mut g = Gestures::default();
++        let (p, q) = (pos2(10.0, 10.0), pos2(300.0, 300.0));
++        frame_live(&mut g, vec![button(true, p), touch(1, TouchPhase::Start, p)], &[1], false, 0.0);
++        frame_live(&mut g, vec![touch(2, TouchPhase::Start, q)], &[1, 2], false, 20.0);
++        // both gone, no end for either
++        frame_live(&mut g, vec![], &[], false, 300.0);
++        assert!(g.active.is_empty() && !g.gesture);
++        let r = pos2(80.0, 80.0);
++        let a = frame_live(&mut g, vec![button(true, r), touch(3, TouchPhase::Start, r)], &[3], false, 1000.0);
++        assert_eq!(presses(&a), 0, "held as a normal touch, not dropped as a gesture");
++        let b = frame_live(&mut g, vec![button(false, r), touch(3, TouchPhase::End, r)], &[], false, 1030.0);
++        assert_eq!(presses(&b), 1);
++    }
++
++    #[test]
++    fn a_mouse_held_down_is_never_released_for_it() {
++        let mut g = Gestures::default();
++        let live = LiveTouches { ids: Some(vec![]), mouse: true, stylus: false };
++        let mut raw = RawInput { events: vec![], ..Default::default() };
++        filter_with(&mut g, &mut raw, &live, true, 0.0);
++        assert_eq!(releases(&raw.events), 0);
++    }
++
++    #[test]
++    fn every_default_action_does_something() {
++        for (gesture, default) in GESTURE_DEFAULTS {
++            assert_ne!(action(default).0, GestureAct::Nothing, "{gesture}");
++        }
++        assert_eq!(action("none").0, GestureAct::Nothing);
++        assert_eq!(action("bogus").0, GestureAct::Nothing);
++        assert_eq!(TapAction::Undo.gesture(), "twoFingerTap");
++    }
++
++    #[test]
 +    fn mouse_and_trackpad_clicks_pass_untouched() {
 +        let mut g = Gestures::default();
 +        let p = pos2(5.0, 5.0);
@@ -16254,7 +16612,7 @@ index 7f32051..1d9e1ef 100644
              if let Some(v) = g.bytes.remove(&oldest) {
                  g.total -= v.0.len();
 diff --git a/apps/lightcraft-web/src/web.rs b/apps/lightcraft-web/src/web.rs
-index 7977391..4fd1a57 100644
+index 7977391..7034749 100644
 --- a/apps/lightcraft-web/src/web.rs
 +++ b/apps/lightcraft-web/src/web.rs
 @@ -609,9 +609,12 @@ impl WebApp {
@@ -16271,7 +16629,45 @@ index 7977391..4fd1a57 100644
          });
          let cache = app.session.media.rendered.clone();
          let workers = (n > 0).then(|| {
-@@ -874,6 +877,8 @@ impl eframe::App for WebApp {
+@@ -828,7 +831,37 @@ pub fn command(id: String, params: String) -> js_sys::Promise {
+     })
+ }
+ 
++/// A gesture the page saw and the app can't (Apple Pencil's double-tap and squeeze, which iPadOS
++/// gives only to native apps: the LightCraft Pencil companion app passes them on): `name` is one
++/// of the gestures in the settings ("pencilDoubleTap", "pencilSqueeze", …). The app runs the
++/// action the person chose for it in its next frame.
++#[wasm_bindgen]
++pub fn gesture(name: String) {
++    crate::mobile::push_gesture(name);
++    CTX.with(|c| c.borrow().as_ref().map(|c| c.request_repaint()));
++}
++
+ impl WebApp {
++    /// Run the action the person chose for `gesture` (see [`crate::mobile::GESTURE_DEFAULTS`]), with a
++    /// short notice naming it.
++    fn run_gesture(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput, gesture: &str) {
++        let name = crate::mobile::gesture_action(gesture);
++        let (act, label) = crate::mobile::action(&name);
++        let said = lightcraft_ui_egui::i18n::tr(label);
++        match act {
++            crate::mobile::GestureAct::Command(id) => match self.app.run(id, serde_json::json!({})) {
++                Ok(_) => self.app.toast(ctx, said),
++                Err(e) => self.app.toast(ctx, e),
++            },
++            crate::mobile::GestureAct::Key(key) => {
++                raw.events.extend(crate::mobile::key_events(key));
++                self.app.toast(ctx, said);
++            }
++            crate::mobile::GestureAct::Nothing => {}
++        }
++        ctx.request_repaint();
++    }
++
+     fn web_stats(&self) -> serde_json::Value {
+         let (alive, ready, remote, inline) = self.workers.as_ref().map_or((0, 0, 0, 0), Workers::stats);
+         let (orig_n, orig_bytes) = self.originals.usage();
+@@ -874,6 +907,8 @@ impl eframe::App for WebApp {
          self.run_inbox();
          self.run_host(ctx);
          self.load_originals(ctx);
@@ -16280,7 +16676,7 @@ index 7977391..4fd1a57 100644
          if let Some(w) = &self.workers {
              // `library.preferences ▸ cacheMb` is read by the session; the worker index prunes on
              // its own thread, so it gets the budget every frame and applies it on the next store.
-@@ -889,6 +894,22 @@ impl eframe::App for WebApp {
+@@ -889,6 +924,24 @@ impl eframe::App for WebApp {
      /// Pass the browser's raw input to the app hook before egui processes it, so prompt barriers
      /// and synthetic or dropped input are applied consistently with the desktop host.
      fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
@@ -16289,26 +16685,31 @@ index 7977391..4fd1a57 100644
 +        // phones and tablets: two-finger tap undoes, three-finger tap redoes; a gesture's fingers
 +        // never tap the buttons under them
 +        if lightcraft_ui_egui::theme::touch_mode() {
-+            let (tap, hold) = crate::mobile::filter_gestures(raw);
++            let pointer_down = ctx.input(|i| i.pointer.any_down());
++            let (tap, hold) = crate::mobile::filter_gestures(raw, pointer_down);
 +            if hold {
 +                ctx.request_repaint_after(std::time::Duration::from_millis(75));
 +            }
 +            if let Some(tap) = tap {
-+                match self.app.run(tap.command(), serde_json::json!({})) {
-+                    Ok(_) => self.app.toast(ctx, lightcraft_ui_egui::i18n::tr(if tap == crate::mobile::TapAction::Undo { "Undo" } else { "Redo" })),
-+                    Err(e) => self.app.toast(ctx, e),
-+                }
++                self.run_gesture(ctx, raw, tap.gesture());
 +            }
++        }
++        // Apple Pencil double-tap / squeeze, from the companion app through the page
++        for g in crate::mobile::take_gestures() {
++            self.run_gesture(ctx, raw, &g);
 +        }
          self.app.raw_input_hook(ctx, raw);
      }
  
-@@ -901,6 +922,8 @@ impl eframe::App for WebApp {
+@@ -901,6 +954,11 @@ impl eframe::App for WebApp {
          let ctx = ui.ctx().clone();
          self.import_dropped(&ctx);
          self.app.ui(ui);
 +        // phones and tablets: the floating bar with the commands a keyboard would give
 +        lightcraft_ui_egui::touch_bar::show(&mut self.app, &ctx);
++        if lightcraft_ui_egui::touch_bar::take_gesture_settings_request(&ctx) {
++            crate::mobile::open_gesture_settings();
++        }
          // eframe's web runner ignores `ViewportCommand::Title`: name the open photo in the page title
          let title = self.app.page_title(self.files.is_dirty() || self.flushing.get());
          if title != self.title
@@ -16823,7 +17224,7 @@ index 2655231..270ff1a 100644
  }
  
 diff --git a/crates/ui-egui/src/render.rs b/crates/ui-egui/src/render.rs
-index e8c3a90..8ada94b 100644
+index e8c3a90..e10b52e 100644
 --- a/crates/ui-egui/src/render.rs
 +++ b/crates/ui-egui/src/render.rs
 @@ -285,6 +285,9 @@ pub struct Renderer {
@@ -16880,22 +17281,24 @@ index e8c3a90..8ada94b 100644
              return;
          }
          self.prefetched.insert(slot, job.key);
-@@ -1215,12 +1232,20 @@ impl Renderer {
+@@ -1215,12 +1232,22 @@ impl Renderer {
          self.follow_catalog(&session.catalog, &session.media.availability);
          self.frame += 1;
          self.trim_stages();
 -        // wasm: run one job per frame on this thread, timed with the host clock
 +        // wasm: run one job per frame on this thread, timed with the host clock. In touch mode
-+        // not while a finger is on the screen, and at most one every 80 ms, so taps, swipes and
-+        // pinches always get frames (the job waits; `pending` keeps the frames coming)
++        // not while a finger is pressing, and at most one every 80 ms, so taps, swipes and
++        // pinches always get frames (the job waits; `pending` keeps the frames coming). Never
++        // more than 400 ms between two: a press that is never released can't stop the work.
          #[cfg(target_arch = "wasm32")]
          let inline_ms = {
 -            let t0 = crate::monotonic_ms();
 -            self.pool.run_inline(1);
 -            crate::monotonic_ms() - t0
 +            let now = crate::monotonic_ms();
-+            let touching = crate::theme::touch_mode() && ctx.input(|i| i.any_touches() || i.pointer.any_down());
-+            if touching || (crate::theme::touch_mode() && now - self.last_inline_ms < 80.0) {
++            let since = now - self.last_inline_ms;
++            let pressing = crate::theme::touch_mode() && ctx.input(|i| i.pointer.any_down());
++            if crate::theme::touch_mode() && since < 400.0 && (pressing || since < 80.0) {
 +                0.0
 +            } else {
 +                self.pool.run_inline(1);
@@ -16975,10 +17378,10 @@ index de2be96..41ece38 100644
  
 diff --git a/crates/ui-egui/src/touch_bar.rs b/crates/ui-egui/src/touch_bar.rs
 new file mode 100644
-index 0000000..7b13bf5
+index 0000000..db847e3
 --- /dev/null
 +++ b/crates/ui-egui/src/touch_bar.rs
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,193 @@
 +//! The touch bar: a small floating bar for phones and tablets ([`crate::theme::touch_mode`]).
 +//!
 +//! On a desktop much of LightCraft is a key away (G, D, Escape, \, Cmd+Z…). A finger has no
@@ -17026,8 +17429,23 @@ index 0000000..7b13bf5
 +        b("view.zoomFit", "Fit", false),
 +        b("view.zoomToggle", "Toggle Zoom", false),
 +        b("app.settings", "Settings…", false),
++        b(GESTURE_SETTINGS, "Apple Pencil & Gestures…", false),
 +    ],
 +];
++
++/// Not a command: the button that asks the host for its gesture settings (which action Apple
++/// Pencil's double-tap and squeeze and the two- and three-finger taps run). The browser host
++/// shows them ([`take_gesture_settings_request`]).
++pub const GESTURE_SETTINGS: &str = "touch.gestureSettings";
++
++fn gesture_settings_id() -> Id {
++    Id::unique("lightcraft-touch-bar-gesture-settings")
++}
++
++/// Whether the gesture settings were asked for since the last call (the host opens them).
++pub fn take_gesture_settings_request(ctx: &egui::Context) -> bool {
++    ctx.data_mut(|d| d.remove_temp::<bool>(gesture_settings_id())).unwrap_or(false)
++}
 +
 +/// Side of the round handle, in points (a comfortable fingertip).
 +const HANDLE: f32 = 44.0;
@@ -17082,9 +17500,10 @@ index 0000000..7b13bf5
 +                        ui.horizontal_wrapped(|ui| {
 +                            for button in row {
 +                                let on = button.toggle && crate::menubar::checked(app, button.id) == Some(true);
++                                let enabled = button.id == GESTURE_SETTINGS || crate::menus::ui_enabled(app, button.id);
 +                                let label = egui::RichText::new(tr(button.label)).size(15.0);
 +                                let w = egui::Button::selectable(on, label).min_size(vec2(44.0, 40.0));
-+                                if ui.add_enabled(crate::menus::ui_enabled(app, button.id), w).clicked() {
++                                if ui.add_enabled(enabled, w).clicked() {
 +                                    run = Some(button.id);
 +                                }
 +                            }
@@ -17102,7 +17521,10 @@ index 0000000..7b13bf5
 +    if toggle_open {
 +        ctx.data_mut(|d| d.insert_temp(open_id(), !open));
 +    }
-+    if let Some(id) = run {
++    if run == Some(GESTURE_SETTINGS) {
++        ctx.data_mut(|d| d.insert_temp(gesture_settings_id(), true));
++        ctx.request_repaint();
++    } else if let Some(id) = run {
 +        if let Err(e) = app.run(id, json!({})) {
 +            app.toast(ctx, e);
 +        }
@@ -17147,7 +17569,7 @@ index 0000000..7b13bf5
 +        let ui: Vec<&str> = crate::menus::ui_commands().map(|c| c.0).collect();
 +        for row in ROWS {
 +            for b in row {
-+                let known = ui.contains(&b.id) || matches!(b.id, "edit.undo" | "edit.redo");
++                let known = ui.contains(&b.id) || matches!(b.id, "edit.undo" | "edit.redo" | super::GESTURE_SETTINGS);
 +                assert!(known, "{} is not a command", b.id);
 +            }
 +        }
