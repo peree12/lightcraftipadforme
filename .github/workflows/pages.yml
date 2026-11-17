@@ -96,9 +96,30 @@ jobs:
           fi
           wasm-bindgen --version
 
+      # wasm-opt (Binaryen) shrinks and speeds up the module; the build works without it
+      - name: Install wasm-opt (Binaryen)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/binaryen"
+          gh release download --repo WebAssembly/binaryen --pattern '*x86_64-linux.tar.gz' --dir "$RUNNER_TEMP/binaryen"
+          tar -xzf "$RUNNER_TEMP"/binaryen/*.tar.gz -C "$RUNNER_TEMP/binaryen"
+          bin=$(dirname "$(find "$RUNNER_TEMP/binaryen" -type f -name wasm-opt | head -1)")
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/wasm-opt" --version
+
+      # SIMD (several pixels per instruction: Safari 16.4+, Chrome, Firefox) makes editing much
+      # faster; if this build can't be made with it, it is made without.
       - name: Build the web app
         working-directory: src
-        run: cargo xtask web
+        run: |
+          if CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-C target-feature=+simd128" cargo xtask web; then
+            echo "Built with WebAssembly SIMD"
+          else
+            echo "::warning::The SIMD build failed; building without SIMD"
+            cargo xtask web
+          fi
 
       - name: Prepare the site
         working-directory: src
